@@ -57,6 +57,71 @@ def test_analyze_vcf_writes_short_format_single_file(tmp_path):
     assert json.loads((tmp_path / "out" / "denovo_per_person.json").read_text())["child1"] == 1
 
 
+def test_analyze_vcf_file_suffix_labels_outputs_and_skips_segmentation(tmp_path):
+    out = tmp_path / "out"
+    stats = analyze_vcf(
+        vcf_path=FIXTURES / "tiny.vcf",
+        af_json_path=FIXTURES / "tiny_af.json",
+        family_file=FIXTURES / "families.tsv",
+        output_dir=out,
+        multiallelic=True,
+        block_size=1,
+        file_suffix="1_2500",
+    )
+
+    suffix = "1_2500"
+    inherited_records = read_result_tsv(out / f"inherited_{suffix}.tsv", short_format=True)
+    denovo_records = read_result_tsv(out / f"denovo_{suffix}.tsv", short_format=True)
+    assert inherited_records[0][1] == "3000"
+    assert denovo_records[0][1] == "1000"
+    assert stats.inherited_variants == 1
+    assert stats.denovo_variants == 1
+    assert not (out / "inherited.tsv").exists()
+    assert not (out / "inherited_00000.tsv").exists()
+    assert not (out / "stats.json").exists()
+    assert json.loads((out / f"inherited_per_variant_{suffix}.json").read_text())["var_inh"] == 1
+    assert json.loads((out / f"stats_{suffix}.json").read_text())["inherited_variants"] == 1
+
+
+def test_analyze_vcf_file_suffixes_do_not_overwrite_in_shared_dir(tmp_path):
+    out = tmp_path / "out"
+    analyze_vcf(
+        vcf_path=FIXTURES / "tiny.vcf",
+        af_json_path=FIXTURES / "tiny_af.json",
+        family_file=FIXTURES / "families.tsv",
+        output_dir=out,
+        segment_size=0,
+        file_suffix="1_2500",
+    )
+    analyze_vcf(
+        vcf_path=FIXTURES / "tiny.vcf",
+        af_json_path=FIXTURES / "tiny_af.json",
+        family_file=FIXTURES / "families.tsv",
+        output_dir=out,
+        segment_size=0,
+        file_suffix="2501_5000",
+    )
+
+    assert (out / "inherited_1_2500.tsv").is_file()
+    assert (out / "inherited_2501_5000.tsv").is_file()
+    assert (out / "stats_1_2500.json").is_file()
+    assert (out / "stats_2501_5000.json").is_file()
+    assert not (out / "stats.json").exists()
+
+
+def test_analyze_vcf_rejects_file_suffix_with_shards(tmp_path):
+    shard = VcfShard(path=FIXTURES / "tiny.vcf", chrom="22", start=1, end=5000)
+    with pytest.raises(ValueError, match="--file-suffix cannot be used with --vcf-dir"):
+        analyze_vcf(
+            vcf_path=None,
+            af_json_path=FIXTURES / "tiny_af.json",
+            family_file=FIXTURES / "families.tsv",
+            output_dir=tmp_path / "out",
+            vcf_shards=[shard],
+            file_suffix="1_5000",
+        )
+
+
 def test_analyze_vcf_labels_hits_with_person_id(tmp_path):
     family = tmp_path / "families.tsv"
     family.write_text(

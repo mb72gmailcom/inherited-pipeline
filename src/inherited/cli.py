@@ -5,6 +5,7 @@ import sys
 from pathlib import Path
 
 from inherited.analyze import analyze_vcf, save_run_params
+from inherited.checkpoint import validate_file_suffix
 from inherited.constants import (
     DEFAULT_AB,
     DEFAULT_AB_HOM,
@@ -181,6 +182,15 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="FILE",
         help="Skip variants inside 0-based BED intervals [start, end) from this file",
     )
+    analyze.add_argument(
+        "--file-suffix",
+        default=None,
+        metavar="SUFFIX",
+        help=(
+            "Label every output file as {stem}_{suffix}.ext. Requires --vcf and "
+            "disables output segmentation. Cannot be used with --vcf-dir or --resume."
+        ),
+    )
 
     return parser
 
@@ -190,6 +200,20 @@ def main(argv: list[str] | None = None) -> None:
 
     if args.command == "analyze":
         vcf_shards = None
+        file_suffix = args.file_suffix
+        if file_suffix is not None:
+            if args.vcf_dir is not None:
+                print("error: --file-suffix requires --vcf", file=sys.stderr)
+                raise SystemExit(1)
+            if args.resume:
+                print("error: --file-suffix cannot be used with --resume", file=sys.stderr)
+                raise SystemExit(1)
+            try:
+                file_suffix = validate_file_suffix(file_suffix)
+            except ValueError as exc:
+                print(f"error: {exc}", file=sys.stderr)
+                raise SystemExit(1) from exc
+        segment_size = 0 if file_suffix is not None else args.segment_size
         if args.vcf_dir is not None:
             if not args.vcf_pattern:
                 print("error: --vcf-dir requires --vcf-pattern", file=sys.stderr)
@@ -244,12 +268,13 @@ def main(argv: list[str] | None = None) -> None:
                 debug=args.debug,
                 memory_block=args.memory_block,
                 block_size=args.block_size,
-                segment_size=args.segment_size,
+                segment_size=segment_size,
                 short_format=args.short_format,
                 resume=args.resume,
                 repeats_path=args.remove_repeats,
                 family_column_map=family_column_map,
                 qc=qc,
+                file_suffix=file_suffix,
             )
         except (FileNotFoundError, ValueError) as exc:
             print(f"error: {exc}", file=sys.stderr)
@@ -269,16 +294,22 @@ def main(argv: list[str] | None = None) -> None:
             debug=args.debug,
             memory_block=args.memory_block,
             block_size=args.block_size,
-            segment_size=args.segment_size,
+            segment_size=segment_size,
             short_format=args.short_format,
             resume=args.resume,
             repeats_path=args.remove_repeats,
             family_map_path=args.family_map,
             qc=qc,
+            file_suffix=file_suffix,
         )
         if vcf_shards is not None:
             output_label = "shard-labeled TSV files"
-        elif args.segment_size > 0:
+        elif file_suffix is not None:
+            output_label = (
+                f"inherited_{file_suffix}.tsv / mendelian_bad_{file_suffix}.tsv / "
+                f"denovo_{file_suffix}.tsv"
+            )
+        elif segment_size > 0:
             output_label = "segmented TSV files"
         else:
             output_label = "inherited.tsv / mendelian_bad.tsv / denovo.tsv"

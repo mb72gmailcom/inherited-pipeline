@@ -10,6 +10,21 @@ CHECKPOINT_FILENAME = "checkpoint.json"
 STATS_CUMULATIVE_FILENAME = "stats_cumulative.json"
 
 
+def validate_file_suffix(suffix: str) -> str:
+    """Require a single path-safe filename token."""
+    if not suffix or suffix.strip() != suffix:
+        raise ValueError("--file-suffix must be a non-empty filename token")
+    if suffix in {".", ".."} or Path(suffix).name != suffix:
+        raise ValueError("--file-suffix must not contain a path separator")
+    return suffix
+
+
+def suffixed_filename(stem: str, ext: str, file_suffix: str | None = None) -> str:
+    if file_suffix:
+        return f"{stem}_{file_suffix}{ext}"
+    return f"{stem}{ext}"
+
+
 @dataclass
 class CumulativeStats:
     variants_seen: int = 0
@@ -100,12 +115,14 @@ class Checkpoint:
         )
 
 
-def checkpoint_path(output_dir: Path) -> Path:
-    return output_dir / CHECKPOINT_FILENAME
+def checkpoint_path(output_dir: Path, file_suffix: str | None = None) -> Path:
+    return output_dir / suffixed_filename("checkpoint", ".json", file_suffix)
 
 
-def load_checkpoint(output_dir: Path) -> Checkpoint | None:
-    path = checkpoint_path(output_dir)
+def load_checkpoint(
+    output_dir: Path, file_suffix: str | None = None
+) -> Checkpoint | None:
+    path = checkpoint_path(output_dir, file_suffix)
     if not path.is_file():
         return None
     with path.open(encoding="utf-8") as handle:
@@ -117,9 +134,10 @@ def save_checkpoint(
     checkpoint: Checkpoint,
     *,
     include_details: bool = True,
+    file_suffix: str | None = None,
 ) -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
-    path = checkpoint_path(output_dir)
+    path = checkpoint_path(output_dir, file_suffix)
     tmp = path.with_suffix(".json.tmp")
     with tmp.open("w", encoding="utf-8") as handle:
         json.dump(

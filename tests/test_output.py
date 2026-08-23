@@ -112,3 +112,38 @@ def test_result_writer_labels_shard_files_by_coordinates(tmp_path):
     checkpoint = load_checkpoint(tmp_path)
     assert checkpoint is not None
     assert checkpoint.shard_end == 5000
+
+
+def test_result_writer_suffixes_all_output_files(tmp_path):
+    writer = ResultWriter(tmp_path, block_size=1, segment_size=1, file_suffix="1_2500")
+    writer.write_inherited(
+        "22", "100", "A", "G", "variant_a", {"p1": ("0/0", "0/1", "0/1", "30")}
+    )
+    writer.write_denovo(
+        "22", "300", "A", "T", "variant_c", {"p1": ("0/0", "0/0", "0/1", "30")}
+    )
+    writer.close()
+    writer.finalize()
+
+    suffix = "1_2500"
+    assert (tmp_path / f"inherited_{suffix}.tsv").is_file()
+    assert (tmp_path / f"denovo_{suffix}.tsv").is_file()
+    assert (tmp_path / f"mendelian_bad_{suffix}.tsv").is_file()
+    assert not (tmp_path / "inherited.tsv").exists()
+    assert not (tmp_path / "inherited_00000.tsv").exists()
+    assert json.loads((tmp_path / f"inherited_per_variant_{suffix}.json").read_text()) == {
+        "variant_a": 1
+    }
+    assert json.loads((tmp_path / f"denovo_per_variant_{suffix}.json").read_text()) == {
+        "variant_c": 1
+    }
+    assert json.loads((tmp_path / f"denovo_per_person_{suffix}.json").read_text()) == {"p1": 1}
+    assert json.loads((tmp_path / f"stats_{suffix}.json").read_text())["inherited_variants"] == 1
+    assert (tmp_path / f"stats_cumulative_{suffix}.json").is_file()
+    assert (tmp_path / f"checkpoint_{suffix}.json").is_file()
+    assert (tmp_path / f"cumulative_detail_deltas_{suffix}.jsonl").is_file()
+    assert not (tmp_path / "stats.json").exists()
+    assert not (tmp_path / "checkpoint.json").exists()
+    checkpoint = load_checkpoint(tmp_path, suffix)
+    assert checkpoint is not None
+    assert checkpoint.completed is True

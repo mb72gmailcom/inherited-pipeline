@@ -6,10 +6,11 @@ from pathlib import Path
 from typing import Any
 
 from inherited.checkpoint import (
-    STATS_CUMULATIVE_FILENAME,
     Checkpoint,
     CumulativeStats,
     save_checkpoint,
+    suffixed_filename,
+    validate_file_suffix,
     write_json_atomic,
 )
 from inherited.constants import DEFAULT_BLOCK_SIZE, DEFAULT_SEGMENT_SIZE
@@ -20,8 +21,6 @@ from inherited.xchrom import (
     X_BUCKETS,
     Y_BUCKETS,
 )
-
-DETAIL_DELTAS_FILENAME = "cumulative_detail_deltas.jsonl"
 
 HitRecord = tuple[str, ...]
 
@@ -203,6 +202,7 @@ class ResultWriter:
     shard_mode: bool = False
     shard_start: int | None = None
     shard_end: int | None = None
+    file_suffix: str | None = None
     _writers_ready: bool = False
     _inherited: dict[str, BlockWriter] = field(default_factory=dict, repr=False)
     _mendelian_bad: dict[str, BlockWriter] = field(default_factory=dict, repr=False)
@@ -215,6 +215,11 @@ class ResultWriter:
     )
 
     def __post_init__(self) -> None:
+        if self.file_suffix is not None:
+            self.file_suffix = validate_file_suffix(self.file_suffix)
+            self.segment_size = 0
+            if self.shard_mode:
+                raise ValueError("--file-suffix cannot be used with --vcf-dir")
         self.output_dir.mkdir(parents=True, exist_ok=True)
         if not self.resume_mode:
             self._detail_deltas_path().write_text("", encoding="utf-8")
@@ -234,6 +239,7 @@ class ResultWriter:
         short_format: bool = True,
         chrom_mode: str = CHROM_MODE_AUTOSOMAL,
         shard_mode: bool = False,
+        file_suffix: str | None = None,
     ) -> ResultWriter:
         writer = cls(
             output_dir=output_dir,
@@ -247,6 +253,7 @@ class ResultWriter:
             last_pos=checkpoint.last_pos,
             resume_mode=True,
             shard_mode=shard_mode,
+            file_suffix=file_suffix,
         )
         if checkpoint.details_external:
             writer._load_detail_deltas(checkpoint.segment_index)
@@ -300,12 +307,18 @@ class ResultWriter:
             return f"{kind}_{bucket}"
         return kind
 
+    def _output_path(self, stem: str, ext: str, *, hidden: bool = False) -> Path:
+        name = suffixed_filename(stem, ext, self.file_suffix)
+        if hidden:
+            name = f".{name}"
+        return self.output_dir / name
+
     def _result_path(self, kind: str, bucket: str, segment_index: int) -> Path:
         stem = self._kind_stem(kind, bucket)
         if self.shard_mode:
             return self.output_dir / f"{stem}_{self.shard_start}_{self.shard_end}.tsv"
         if self.segment_size <= 0:
-            return self.output_dir / f"{stem}.tsv"
+            return self._output_path(stem, ".tsv")
         return self.output_dir / f"{stem}_{segment_index:05d}.tsv"
 
     def _per_variant_path(
@@ -315,7 +328,7 @@ class ResultWriter:
         if self.shard_mode:
             return self.output_dir / f"{stem}_{self.shard_start}_{self.shard_end}.json"
         if self.segment_size <= 0:
-            return self.output_dir / f".{stem}.json.part"
+            return self._output_path(stem, ".json.part", hidden=True)
         return self.output_dir / f"{stem}_seg{segment_index:05d}.json"
 
     def _inherited_per_variant_path(self, bucket: str, segment_index: int) -> Path:
@@ -325,7 +338,7 @@ class ResultWriter:
         return self._per_variant_path("denovo", bucket, segment_index)
 
     def _detail_deltas_path(self) -> Path:
-        return self.output_dir / DETAIL_DELTAS_FILENAME
+        return self._output_path("cumulative_detail_deltas", ".jsonl")
 
     def _close_writers(self) -> None:
         for writer in self._inherited.values():
@@ -567,6 +580,7 @@ class ResultWriter:
             self.output_dir,
             self._checkpoint(completed=False),
             include_details=False,
+            file_suffix=self.file_suffix,
         )
         self.segment_index += 1
         if open_next:
@@ -586,6 +600,7 @@ class ResultWriter:
                 self.output_dir,
                 self._checkpoint(completed=completed),
                 include_details=False,
+                file_suffix=self.file_suffix,
             )
         self._merge_inherited_per_variant_files()
         self._merge_denovo_per_variant_files()
@@ -611,7 +626,7 @@ class ResultWriter:
                 }
                 for name, stats in self.bucket_stats.items()
             }
-        write_json_atomic(self.output_dir / STATS_CUMULATIVE_FILENAME, payload)
+        write_json_atomic(self._output_path("stats_cumulative", ".json"), payload)
 
     def _append_detail_delta(self) -> None:
         if (
@@ -774,7 +789,7 @@ class ResultWriter:
     def _merge_per_variant_files(self, kind: str) -> None:
         for bucket in self._bucket_names():
             stem = self._kind_stem(f"{kind}_per_variant", bucket)
-            output_path = self.output_dir / f"{stem}.json"
+            output_path = self._output_path(stem, ".json")
             if self.shard_mode:
                 pattern = f"{stem}_*_*.json"
             else:
@@ -808,19 +823,19 @@ class ResultWriter:
         if self.uses_named_buckets:
             for bucket, stats in self.bucket_stats.items():
                 write_json_atomic(
-                    self.output_dir / f"inherited_per_person_{bucket}.json",
+                    self._output_path(f"inherited_per_person_{bucket}", ".json"),
                     stats.inherited_per_person,
                 )
                 write_json_atomic(
-                    self.output_dir / f"denovo_per_person_{bucket}.json",
+                    self._output_path(f"denovo_per_person_{bucket}", ".json"),
                     stats.denovo_per_person,
                 )
                 write_json_atomic(
-                    self.output_dir / f"mendelian_bad_per_gt_{bucket}.json",
+                    self._output_path(f"mendelian_bad_per_gt_{bucket}", ".json"),
                     stats.mendelian_bad_per_gt,
                 )
                 write_json_atomic(
-                    self.output_dir / f"stats_{bucket}.json",
+                    self._output_path(f"stats_{bucket}", ".json"),
                     {
                         "inherited_entries": stats.inherited_entries,
                         "inherited_variants": stats.inherited_variants,
@@ -832,20 +847,20 @@ class ResultWriter:
                 )
         else:
             write_json_atomic(
-                self.output_dir / "inherited_per_person.json",
+                self._output_path("inherited_per_person", ".json"),
                 self.cumulative.inherited_per_person,
             )
             write_json_atomic(
-                self.output_dir / "denovo_per_person.json",
+                self._output_path("denovo_per_person", ".json"),
                 self.cumulative.denovo_per_person,
             )
             write_json_atomic(
-                self.output_dir / "mendelian_bad_per_gt.json",
+                self._output_path("mendelian_bad_per_gt", ".json"),
                 self.cumulative.mendelian_bad_per_gt,
             )
 
         write_json_atomic(
-            self.output_dir / "stats.json",
+            self._output_path("stats", ".json"),
             {
                 "variants_seen": self.cumulative.variants_seen,
                 "alleles_tested": self.cumulative.alleles_tested,

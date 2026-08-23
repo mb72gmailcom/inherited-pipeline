@@ -9,7 +9,7 @@ from typing import Any
 
 from inherited import __version__
 from inherited.af import is_rare, load_af_json
-from inherited.checkpoint import load_checkpoint
+from inherited.checkpoint import load_checkpoint, suffixed_filename, validate_file_suffix
 from inherited.constants import (
     DEFAULT_AF_THRESHOLD,
     DEFAULT_BLOCK_SIZE,
@@ -95,11 +95,19 @@ def analyze_vcf(
     repeats_path: Path | None = None,
     family_column_map: dict[str, str] | None = None,
     qc: QualityFilters = DEFAULT_QUALITY,
+    file_suffix: str | None = None,
 ) -> AnalysisStats:
     """Scan a VCF, classify trios, and stream results to segmented TSV files."""
     if (vcf_path is None) == (vcf_shards is None):
         raise ValueError("Specify exactly one of vcf_path or vcf_shards")
     shard_mode = vcf_shards is not None
+    if file_suffix is not None:
+        file_suffix = validate_file_suffix(file_suffix)
+        if shard_mode:
+            raise ValueError("--file-suffix cannot be used with --vcf-dir")
+        if resume:
+            raise ValueError("--file-suffix cannot be used with --resume")
+        segment_size = 0
     if resume and segment_size <= 0 and not shard_mode:
         raise ValueError("--resume requires --segment-size > 0")
 
@@ -112,7 +120,7 @@ def analyze_vcf(
     af_table = load_af_json(af_json_path)
     relations = load_family_relations(family_file, column_map=family_column_map)
 
-    checkpoint = load_checkpoint(output_dir) if resume else None
+    checkpoint = load_checkpoint(output_dir, file_suffix) if resume else None
     if resume and checkpoint is None:
         raise FileNotFoundError(f"No checkpoint found in {output_dir}")
     if resume and checkpoint.completed:
@@ -131,6 +139,7 @@ def analyze_vcf(
                 else CHROM_MODE_AUTOSOMAL
             ),
             shard_mode=shard_mode,
+            file_suffix=file_suffix,
         )
         resume_last_pos = checkpoint.last_pos
     else:
@@ -140,6 +149,7 @@ def analyze_vcf(
             segment_size=segment_size,
             short_format=short_format,
             shard_mode=shard_mode,
+            file_suffix=file_suffix,
         )
         resume_last_pos = -1
 
@@ -722,10 +732,11 @@ def save_run_params(
     repeats_path: Path | None = None,
     family_map_path: Path | None = None,
     qc: QualityFilters = DEFAULT_QUALITY,
+    file_suffix: str | None = None,
 ) -> Path:
     """Write the parameters for this run into the chromosome output directory."""
     output_dir.mkdir(parents=True, exist_ok=True)
-    params_path = output_dir / "params.json"
+    params_path = output_dir / suffixed_filename("params", ".json", file_suffix)
 
     payload: dict[str, Any] = {
         "package_version": __version__,
@@ -744,6 +755,7 @@ def save_run_params(
         "remove_repeats": str(repeats_path.resolve()) if repeats_path is not None else None,
         "family_map": str(family_map_path.resolve()) if family_map_path is not None else None,
         "quality_filters": qc.as_params(),
+        "file_suffix": file_suffix,
     }
     if vcf_path is not None:
         payload["vcf"] = str(vcf_path.resolve())

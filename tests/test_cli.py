@@ -1,6 +1,9 @@
+import json
+from pathlib import Path
+
 import pytest
 
-from inherited.cli import build_parser
+from inherited.cli import build_parser, main
 from inherited.constants import (
     DEFAULT_AB,
     DEFAULT_AB_HOM,
@@ -9,6 +12,8 @@ from inherited.constants import (
     DEFAULT_HAPLO_AB,
     DEFAULT_HAPLO_DP,
 )
+
+FIXTURES = Path(__file__).parent / "fixtures"
 
 _ANALYZE_MIN = [
     "analyze",
@@ -34,6 +39,7 @@ def test_analyze_parser_qc_defaults():
     assert args.vcf_dir is None
     assert args.vcf_pattern is None
     assert args.family_map is None
+    assert args.file_suffix is None
 
 
 def test_analyze_parser_qc_overrides():
@@ -97,3 +103,69 @@ def test_analyze_parser_rejects_vcf_and_vcf_dir_together():
                 "shards",
             ]
         )
+
+
+def test_analyze_parser_file_suffix():
+    args = build_parser().parse_args([*_ANALYZE_MIN, "--file-suffix", "1_2500"])
+    assert args.file_suffix == "1_2500"
+
+
+def test_main_rejects_file_suffix_with_vcf_dir(capsys):
+    with pytest.raises(SystemExit) as exc:
+        main(
+            [
+                "analyze",
+                "--vcf-dir",
+                "shards",
+                "--vcf-pattern",
+                "callset",
+                "--af-json",
+                "af.json",
+                "--family-file",
+                "fam.tsv",
+                "-o",
+                "out",
+                "--file-suffix",
+                "1_2500",
+            ]
+        )
+    assert exc.value.code == 1
+    assert "--file-suffix requires --vcf" in capsys.readouterr().err
+
+
+def test_main_rejects_file_suffix_with_resume(capsys):
+    with pytest.raises(SystemExit) as exc:
+        main([*_ANALYZE_MIN, "--file-suffix", "1_2500", "--resume"])
+    assert exc.value.code == 1
+    assert "--file-suffix cannot be used with --resume" in capsys.readouterr().err
+
+
+def test_main_rejects_file_suffix_with_path_separator(capsys):
+    with pytest.raises(SystemExit) as exc:
+        main([*_ANALYZE_MIN, "--file-suffix", "a/b"])
+    assert exc.value.code == 1
+    assert "path separator" in capsys.readouterr().err
+
+
+def test_main_file_suffix_writes_suffixed_params(tmp_path):
+    out = tmp_path / "out"
+    main(
+        [
+            "analyze",
+            "--vcf",
+            str(FIXTURES / "tiny.vcf"),
+            "--af-json",
+            str(FIXTURES / "tiny_af.json"),
+            "--family-file",
+            str(FIXTURES / "families.tsv"),
+            "-o",
+            str(out),
+            "--file-suffix",
+            "1_2500",
+        ]
+    )
+    params = json.loads((out / "params_1_2500.json").read_text(encoding="utf-8"))
+    assert params["file_suffix"] == "1_2500"
+    assert params["segment_size"] == 0
+    assert not (out / "params.json").exists()
+    assert (out / "inherited_1_2500.tsv").is_file()

@@ -34,6 +34,19 @@ python run.py analyze \
 
 `--vcf-dir` looks for `{pattern}.{chr}_{start}_{end}.vcf.gz` (or `.vcf`) in a directory that holds one chromosome. `--vcf-pattern` may be the callset stem (`SPARK.WGS.2026_08.gatk`) or that stem plus the contig (`...gatk.chr21`). Output files are labeled by each shard's coordinates (`inherited_95000001_97500000.tsv`), not by `--segment-size`. `--vcf` and `--vcf-dir` are mutually exclusive.
 
+To analyze one already-split shard with `--vcf` and write labeled files into a shared output directory:
+
+```bash
+python run.py analyze \
+  --vcf SPARK.WGS.2026_08.gatk.chr22_95000001_97500000.vcf.gz \
+  --af-json gnomad_chr22.json \
+  --family-file families.tsv \
+  -o results/chr22 \
+  --file-suffix 95000001_97500000
+```
+
+`--file-suffix` requires `--vcf`, turns off output segmentation, and appends `_{suffix}` to every output file (`inherited_95000001_97500000.tsv`, `stats_95000001_97500000.json`, `params_95000001_97500000.json`, and so on). It cannot be used with `--vcf-dir` or `--resume`.
+
 ## Family file format
 
 Tab-separated file with a header row (required via `--family-file`):
@@ -168,6 +181,7 @@ Autosomal output directory contains:
 - `inherited_XXXXX.tsv` / `mendelian_bad_XXXXX.tsv` / `denovo_XXXXX.tsv` — segmented result files (when `--vcf` and `--segment-size > 0`)
 - `inherited_{start}_{end}.tsv` / `mendelian_bad_{start}_{end}.tsv` / `denovo_{start}_{end}.tsv` — one file per input shard (when `--vcf-dir`)
 - `inherited.tsv` / `mendelian_bad.tsv` / `denovo.tsv` — single files when `--vcf` and `--segment-size 0`
+- `inherited_{suffix}.tsv` / `mendelian_bad_{suffix}.tsv` / `denovo_{suffix}.tsv` — single files when `--vcf` and `--file-suffix` (every sidecar JSON is labeled the same way)
 - `inherited_per_variant.json`, `inherited_per_person.json`, `denovo_per_variant.json`, `denovo_per_person.json`, `mendelian_bad_per_gt.json`, `stats.json`
 
 chrX output uses sex/region buckets:
@@ -206,7 +220,7 @@ Male nonPAR chrY full format omits the mother genotype: `child_id=father_gt|chil
 
 Use `--block-size` (default `10000`) for in-memory buffer flushes within a segment.
 
-Use `--segment-size` (default `1000000`) with `--vcf` to split output into segment files. Set `--segment-size 0` to disable segmentation. `--segment-size` is ignored with `--vcf-dir`; those runs split output by each input shard's `{start}_{end}`.
+Use `--segment-size` (default `1000000`) with `--vcf` to split output into segment files. Set `--segment-size 0` to disable segmentation. `--segment-size` is ignored with `--vcf-dir`, where each input shard writes files labeled `{start}_{end}`. `--file-suffix` also disables segmentation.
 
 Resume after a crash:
 
