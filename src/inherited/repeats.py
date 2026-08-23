@@ -6,8 +6,9 @@ from pathlib import Path
 class RepeatIntervalFilter:
     """Stream repeat intervals and test whether a position falls inside one.
 
-    Interval files are whitespace-separated rows ``chrom start end`` with
-    half-open intervals ``[start, end)``.
+    Interval files are 0-based BED-style ``chrom start end`` rows with
+    half-open intervals ``[start, end)``. ``pos`` arguments are 1-based VCF
+    coordinates.
     """
 
     def __init__(self, path: Path) -> None:
@@ -35,12 +36,15 @@ class RepeatIntervalFilter:
         self._start = self._end = 2**63
 
     def advance_past(self, pos: int) -> None:
-        """Drop intervals that end at or before ``pos``."""
-        while not self._exhausted and pos >= self._end:
+        """Drop intervals that end at or before 1-based ``pos``."""
+        zero_based = pos - 1
+        while not self._exhausted and zero_based >= self._end:
             self._load_next()
 
     def in_repeat(self, pos: int) -> bool:
+        """Return whether 1-based VCF ``pos`` falls in a 0-based BED interval."""
         self.advance_past(pos)
         if self._exhausted:
             return False
-        return self._start <= pos < self._end
+        zero_based = pos - 1
+        return self._start <= zero_based < self._end

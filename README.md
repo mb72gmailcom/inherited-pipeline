@@ -110,7 +110,7 @@ python run.py analyze \
   --remove-repeats chr22_repeats.bed
 ```
 
-Repeat files are whitespace-separated ``chrom start end`` rows with half-open intervals ``[start, end)``.
+Repeat files are 0-based BED-style ``chrom start end`` rows with half-open intervals ``[start, end)``. VCF positions are 1-based, so a row ``chr22 2500 3500`` skips POS 2501 through 3500.
 
 ## Quality filters
 

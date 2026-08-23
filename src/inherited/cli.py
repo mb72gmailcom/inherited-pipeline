@@ -179,7 +179,7 @@ def build_parser() -> argparse.ArgumentParser:
         type=Path,
         default=None,
         metavar="FILE",
-        help="Skip variants inside repeat intervals [start, end) from this file",
+        help="Skip variants inside 0-based BED intervals [start, end) from this file",
     )
 
     return parser

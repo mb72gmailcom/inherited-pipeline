@@ -8,9 +8,10 @@ FIXTURES = Path(__file__).parent / "fixtures"
 def test_in_repeat_inside_interval():
     filt = RepeatIntervalFilter(FIXTURES / "tiny_repeats.bed")
     try:
-        assert filt.in_repeat(2500) is True
+        assert filt.in_repeat(2501) is True
         assert filt.in_repeat(3000) is True
         assert filt.in_repeat(3499) is True
+        assert filt.in_repeat(3500) is True
     finally:
         filt.close()
 
@@ -19,7 +20,8 @@ def test_in_repeat_outside_interval():
     filt = RepeatIntervalFilter(FIXTURES / "tiny_repeats.bed")
     try:
         assert filt.in_repeat(2499) is False
-        assert filt.in_repeat(3500) is False
+        assert filt.in_repeat(2500) is False
+        assert filt.in_repeat(3501) is False
         assert filt.in_repeat(4000) is False
     finally:
         filt.close()
