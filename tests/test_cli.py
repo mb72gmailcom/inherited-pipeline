@@ -35,6 +35,7 @@ def test_analyze_parser_qc_defaults():
     assert args.dp_haploid_threshold == DEFAULT_HAPLO_DP
     assert args.ab_threshold == DEFAULT_AB
     assert args.ab_hom_threshold == DEFAULT_AB_HOM
+    assert args.ab_hom00_threshold is None
     assert args.ab_haploid_threshold == DEFAULT_HAPLO_AB
     assert args.vcf_dir is None
     assert args.vcf_pattern is None
@@ -56,6 +57,8 @@ def test_analyze_parser_qc_overrides():
             "0.3",
             "--ab-hom-threshold",
             "0.95",
+            "--ab-hom00-threshold",
+            "0.9",
             "--ab-haploid-threshold",
             "0.8",
         ]
@@ -65,6 +68,7 @@ def test_analyze_parser_qc_overrides():
     assert args.dp_haploid_threshold == 8
     assert args.ab_threshold == 0.3
     assert args.ab_hom_threshold == 0.95
+    assert args.ab_hom00_threshold == 0.9
     assert args.ab_haploid_threshold == 0.8
 
 

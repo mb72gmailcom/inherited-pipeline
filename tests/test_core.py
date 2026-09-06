@@ -266,6 +266,15 @@ def test_is_good_rejects_missing_ad():
 
 def test_is_good_allows_homozygous_reference():
     assert is_good("0/0", "30", "30,0", "0,0,0,0", "30", 1)
+    assert is_good("0/0", "30", "80,5,15", "0,0,0,0", "30", 1)
+
+
+def test_is_good_diploid_hom00_ab_floor():
+    assert is_good("0/0", "30", "27,3", "0,0,0,0", "30", 1, ab_hom00_min=0.9)
+    assert not is_good("0/0", "30", "24,6", "0,0,0,0", "30", 1, ab_hom00_min=0.9)
+    assert not is_good("0/0", "30", "80,5,15", "0,0,0,0", "30", 1, ab_hom00_min=0.9)
+    assert is_good("0/2", "30", "80,5,15", "0,0,0,0", "30", 1, ab_hom00_min=0.9)
+    assert is_good("0", "10", "8,2", "0,0,0,0", "30", 1, haploid=True, ab_hom00_min=0.9)
 
 
 def test_is_good_diploid_het_ab_band():
@@ -298,6 +307,10 @@ def test_get_good_site_handles_missing_ad():
 def test_get_good_site_homozygous_reference_returns_zero():
     sample = "0/0:30:30,0:0,0,0,0:30:0,30,30:."
     assert get_good_site(sample, 1) == (0, "0/0", "30")
+    leaky = "0/0:30:24,6:0,0,0,0:30:0,30,30:."
+    assert get_good_site(leaky, 1) == (0, "0/0", "30")
+    assert get_good_site(leaky, 1, qc=QualityFilters(ab_hom00=0.9)) == (-1, ".", "0")
+    assert get_good_site(sample, 1, qc=QualityFilters(ab_hom00=0.9)) == (0, "0/0", "30")
 
 
 def test_get_good_site_skip_qc_if_no_alt_bypasses_depth():

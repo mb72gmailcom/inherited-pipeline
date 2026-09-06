@@ -127,7 +127,7 @@ Repeat files are 0-based BED-style ``chrom start end`` rows with half-open inter
 
 ## Quality filters
 
-Diploid QC (autosomes, female chrX, male PAR): `DP≥10`, `GQ≥20`. Allele balance applies only when the genotype carries the queried alt: heterozygotes (`ac==1`) require `0.25 ≤ AB ≤ 0.75`; homozygous-alt (`ac≥2`) require `AB≥0.9`. Homozygous-reference calls skip AB.
+Diploid QC (autosomes, female chrX, male PAR): `DP≥10`, `GQ≥20`. Allele balance applies only when the genotype carries the queried alt: heterozygotes (`ac==1`) require `0.25 ≤ AB ≤ 0.75`; homozygous-alt (`ac≥2`) require `AB≥0.9`. Homozygous-reference calls skip AB unless `--ab-hom00-threshold` is set; then diploid `0/0` requires `ab00 ≥ value` where `ab00 = AD[REF] / sum(AD)` (typical `0.9`).
 
 Haploid QC (male chrX nonPAR, chrY): `DP≥5`, `GQ≥20`, and `AB≥0.85` when the genotype carries the alt.
 
@@ -147,7 +147,7 @@ python run.py analyze \
   --ab-haploid-threshold 0.85
 ```
 
-`--ab-threshold` is the diploid heterozygous half-band: het AB must fall in `[value, 1-value]`. Applied values are written to `params.json` under `quality_filters`.
+`--ab-threshold` is the diploid heterozygous half-band: het AB must fall in `[value, 1-value]`. `--ab-hom00-threshold` is an optional diploid `0/0` REF-fraction floor (`ab00 ≥ value`); omit it to keep the historical no-AB-on-`0/0` behavior. Applied values are written to `params.json` under `quality_filters`.
 
 ## Chromosome X
 

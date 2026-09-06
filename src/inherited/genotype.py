@@ -14,12 +14,16 @@ from inherited.constants import (
 
 @dataclass(frozen=True)
 class QualityFilters:
-    """Per-run genotype QC thresholds. Defaults match ``constants.py``."""
+    """Per-run genotype QC thresholds. Defaults match ``constants.py``.
+
+    ``ab_hom00`` is optional; ``None`` means diploid ``0/0`` skips AB.
+    """
 
     gq: int = DEFAULT_GQ
     dp: int = DEFAULT_DP
     ab: float = DEFAULT_AB
     ab_hom: float = DEFAULT_AB_HOM
+    ab_hom00: float | None = None
     haplo_dp: int = DEFAULT_HAPLO_DP
     haplo_ab: float = DEFAULT_HAPLO_AB
 
@@ -128,6 +132,7 @@ def is_good(
     dp_min: int = DEFAULT_DP,
     ab_min: float = DEFAULT_AB,
     ab_hom_min: float = DEFAULT_AB_HOM,
+    ab_hom00_min: float | None = None,
     gq_min: int = DEFAULT_GQ,
     alleles: list[str] | None = None,
     ac: int | None = None,
@@ -155,6 +160,13 @@ def is_good(
     if ac is None:
         ac = sum(allele.isdigit() and int(allele) == alt_index for allele in parsed)
     if ac <= 0:
+        if (
+            ab_hom00_min is not None
+            and not haploid
+            and parsed
+            and all(allele == "0" for allele in parsed)
+        ):
+            return ads[0] / total >= ab_hom00_min
         return True
 
     ab = ads[alt_index] / total
@@ -211,6 +223,9 @@ def get_good_site(
     When ``haploid`` is True, use haploid depth/AB thresholds while still counting
     alternate alleles from the GT field. Diploid sites use a het AB band
     ``[ab_min, 1 - ab_min]`` and a separate homozygous-alt floor ``ab_hom_min``.
+    When ``qc.ab_hom00`` is set, diploid ``0/0`` also requires
+    ``AD[0] / sum(AD) >= ab_hom00``. Haploid ref and other ``ac==0`` genotypes
+    skip that check.
 
     When ``skip_qc_if_no_alt`` is True and the genotype carries no copies of the
     queried alt, return ``(0, gt, gq)`` without DP/AD/GQ checks. Used for child
@@ -242,6 +257,7 @@ def get_good_site(
         dp_min=dp_min,
         ab_min=ab_min,
         ab_hom_min=qc.ab_hom,
+        ab_hom00_min=qc.ab_hom00,
         gq_min=qc.gq,
         alleles=alleles,
         ac=ac,

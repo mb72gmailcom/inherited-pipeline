@@ -130,6 +130,18 @@ def build_parser() -> argparse.ArgumentParser:
         help=f"Minimum diploid homozygous-alt allele balance (default: {DEFAULT_AB_HOM})",
     )
     analyze.add_argument(
+        "--ab-hom00-threshold",
+        type=float,
+        default=None,
+        help=(
+            "Optional minimum diploid homozygous-ref allele balance. When set, "
+            "genotype 0/0 must satisfy ab00 >= value, where ab00 is "
+            "AD[REF] / sum(AD) (inclusive). Typical value: 0.9, the same idea "
+            "as --ab-hom-threshold. Omitted (default): no 0/0 AB check. "
+            "Does not apply to haploid ref or to other ac==0 genotypes such as 0/2"
+        ),
+    )
+    analyze.add_argument(
         "--ab-haploid-threshold",
         type=float,
         default=DEFAULT_HAPLO_AB,
@@ -254,6 +266,7 @@ def main(argv: list[str] | None = None) -> None:
                 dp=args.dp_threshold,
                 ab=args.ab_threshold,
                 ab_hom=args.ab_hom_threshold,
+                ab_hom00=args.ab_hom00_threshold,
                 haplo_dp=args.dp_haploid_threshold,
                 haplo_ab=args.ab_haploid_threshold,
             )
