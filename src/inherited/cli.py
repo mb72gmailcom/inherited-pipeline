@@ -408,11 +408,12 @@ def _run_filter(args: argparse.Namespace) -> None:
         raise SystemExit(1) from exc
     if sites_dir is None:
         print(f"Wrote histograms to {args.output_dir}")
-        return
-    print(
-        f"Wrote histograms and filtered VCFs to {args.output_dir} "
-        f"and TSVs to {sites_dir}"
-    )
+    else:
+        print(
+            f"Wrote histograms and filtered VCFs to {args.output_dir} "
+            f"and TSVs to {sites_dir}"
+        )
+    print(f"Wrote parameters to {args.output_dir / 'params.json'}")
 
 
 if __name__ == "__main__":

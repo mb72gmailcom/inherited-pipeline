@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 from collections import Counter
 from pathlib import Path
@@ -46,18 +47,24 @@ def filter_results(
         output_dir / f"{prefix}_patients_per_variant_hist.tsv",
         carrier_counts,
     )
-    if variant_cap is None or patient_cap is None:
-        return None
-
-    sites_dir = output_dir.with_name(output_dir.name + "-sites")
-    sites_dir.mkdir(parents=True, exist_ok=True)
-    _write_filtered(
-        tsv_files,
+    sites_dir = None
+    if variant_cap is not None and patient_cap is not None:
+        sites_dir = output_dir.with_name(output_dir.name + "-sites")
+        sites_dir.mkdir(parents=True, exist_ok=True)
+        _write_filtered(
+            tsv_files,
+            output_dir,
+            sites_dir,
+            person_counts,
+            variant_cap,
+            patient_cap,
+        )
+    _write_params(
+        input_dir,
         output_dir,
-        sites_dir,
-        person_counts,
-        variant_cap,
-        patient_cap,
+        prefix,
+        variant_cap=variant_cap,
+        patient_cap=patient_cap,
     )
     return sites_dir
 
@@ -129,6 +136,27 @@ def _iter_short_rows(path: Path):
                 raise ValueError(f"{path} requires input in short format")
             patients = [patient for patient in patients_field.split(";") if patient]
             yield fields[:5], patients
+
+
+def _write_params(
+    input_dir: Path,
+    output_dir: Path,
+    prefix: str,
+    *,
+    variant_cap: int | None,
+    patient_cap: int | None,
+) -> Path:
+    params_path = output_dir / "params.json"
+    payload = {
+        "input_dir": str(input_dir.resolve()),
+        "output_dir": str(output_dir.resolve()),
+        "patient_cap": patient_cap,
+        "prefix": prefix,
+        "variant_cap": variant_cap,
+    }
+    with params_path.open("w", encoding="utf-8") as handle:
+        json.dump(payload, handle, indent=2, sort_keys=True)
+    return params_path
 
 
 def _write_histogram(path: Path, counts: Counter[int]) -> None:

@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 
 import pytest
@@ -83,6 +84,13 @@ def test_histograms_without_caps(tmp_path: Path):
     assert (output / "inherited_patients_per_variant_hist.tsv").read_text(
         encoding="utf-8"
     ) == ("count\tn\n1\t3\n2\t2\n3\t1\n")
+    assert json.loads((output / "params.json").read_text(encoding="utf-8")) == {
+        "input_dir": str(source.resolve()),
+        "output_dir": str(output.resolve()),
+        "patient_cap": None,
+        "prefix": "inherited",
+        "variant_cap": None,
+    }
 
 
 def test_both_caps_write_vcf_and_sites(tmp_path: Path):
@@ -115,6 +123,14 @@ def test_both_caps_write_vcf_and_sites(tmp_path: Path):
     ) == (TSV_HEADER + "chrX\t70\t.\tA\tG\tp3\n")
     assert not (output / "chr22" / "denovo_00000.vcf").exists()
     assert not (sites / "notes").exists()
+    assert json.loads((output / "params.json").read_text(encoding="utf-8")) == {
+        "input_dir": str(source.resolve()),
+        "output_dir": str(output.resolve()),
+        "patient_cap": 2,
+        "prefix": "inherited",
+        "variant_cap": 2,
+    }
+    assert not (sites / "params.json").exists()
 
 
 def test_one_cap_is_an_error(tmp_path: Path, capsys):
