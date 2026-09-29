@@ -6,6 +6,7 @@ from pathlib import Path
 
 from inherited.analyze import analyze_vcf, save_run_params
 from inherited.checkpoint import validate_file_suffix
+from inherited.filter import PREFIXES, filter_results
 from inherited.constants import (
     DEFAULT_AB,
     DEFAULT_AB_HOM,
@@ -204,11 +205,63 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
 
+    filter_cmd = subparsers.add_parser(
+        "filter",
+        help="Cap patients per variant and variants per patient in result TSVs",
+    )
+    filter_cmd.add_argument(
+        "--input-dir",
+        required=True,
+        type=Path,
+        help="Parent of chrN, chrX, and chrY result directories",
+    )
+    filter_cmd.add_argument(
+        "--output-dir",
+        required=True,
+        type=Path,
+        help=(
+            "Directory for histograms and, when both caps are set, filtered VCFs. "
+            "Filtered TSVs are written to this path with -sites appended"
+        ),
+    )
+    filter_cmd.add_argument(
+        "--prefix",
+        required=True,
+        choices=PREFIXES,
+        help="Result files to read: inherited, denovo, or mendelian_bad",
+    )
+    filter_cmd.add_argument(
+        "--variant-cap",
+        type=_nonnegative_int,
+        default=None,
+        help="Keep a person when their variant count is <= this value",
+    )
+    filter_cmd.add_argument(
+        "--patient-cap",
+        type=_nonnegative_int,
+        default=None,
+        help="Drop a variant when its patient count is > this value",
+    )
+
     return parser
+
+
+def _nonnegative_int(text: str) -> int:
+    try:
+        value = int(text)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("must be an integer >= 0") from exc
+    if value < 0:
+        raise argparse.ArgumentTypeError("must be an integer >= 0")
+    return value
 
 
 def main(argv: list[str] | None = None) -> None:
     args = build_parser().parse_args(argv)
+
+    if args.command == "filter":
+        _run_filter(args)
+        return
 
     if args.command == "analyze":
         vcf_shards = None
@@ -336,6 +389,30 @@ def main(argv: list[str] | None = None) -> None:
             f"to {args.output_dir}"
         )
         print(f"Wrote parameters to {params_path}")
+
+
+def _run_filter(args: argparse.Namespace) -> None:
+    if not args.input_dir.is_dir():
+        print(f"error: input directory not found: {args.input_dir}", file=sys.stderr)
+        raise SystemExit(1)
+    try:
+        sites_dir = filter_results(
+            args.input_dir,
+            args.output_dir,
+            args.prefix,
+            variant_cap=args.variant_cap,
+            patient_cap=args.patient_cap,
+        )
+    except ValueError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        raise SystemExit(1) from exc
+    if sites_dir is None:
+        print(f"Wrote histograms to {args.output_dir}")
+        return
+    print(
+        f"Wrote histograms and filtered VCFs to {args.output_dir} "
+        f"and TSVs to {sites_dir}"
+    )
 
 
 if __name__ == "__main__":
