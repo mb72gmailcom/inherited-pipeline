@@ -189,10 +189,10 @@ def _write_filtered(
         tsv_path = sites_dir / chrom / path.name
         vcf_path.parent.mkdir(parents=True, exist_ok=True)
         tsv_path.parent.mkdir(parents=True, exist_ok=True)
+        wrote = False
         with vcf_path.open("w", encoding="utf-8") as vcf, tsv_path.open(
             "w", encoding="utf-8"
         ) as tsv:
-            tsv.write(TSV_HEADER)
             for columns, patients in _iter_short_rows(path):
                 if patient_cap is not None and len(patients) > patient_cap:
                     continue
@@ -206,6 +206,20 @@ def _write_filtered(
                     ]
                 if not kept:
                     continue
+                if not wrote:
+                    tsv.write(TSV_HEADER)
+                    wrote = True
                 site = "\t".join(columns)
                 vcf.write(f"{site}\n")
                 tsv.write(f"{site}\t{';'.join(kept)}\n")
+        if not wrote:
+            vcf_path.unlink()
+            tsv_path.unlink()
+            _remove_empty_dir(vcf_path.parent)
+            _remove_empty_dir(tsv_path.parent)
+    _remove_empty_dir(sites_dir)
+
+
+def _remove_empty_dir(path: Path) -> None:
+    if path.is_dir() and not any(path.iterdir()):
+        path.rmdir()

@@ -107,9 +107,8 @@ def test_both_caps_write_vcf_and_sites(tmp_path: Path):
     )
 
     assert sites == tmp_path / "kept-sites"
-    assert (output / "chr21" / "variants_00000.vcf").read_text(encoding="utf-8") == ""
-    assert not (output / "chr21" / "inherited_00000.vcf").exists()
-    assert (sites / "chr21" / "inherited_00000.tsv").read_text(encoding="utf-8") == TSV_HEADER
+    assert not (output / "chr21").exists()
+    assert not (sites / "chr21").exists()
     assert (output / "chr22" / "variants_00000.vcf").read_text(encoding="utf-8") == (
         "chr22\t50\t.\tA\tC\n"
     )
