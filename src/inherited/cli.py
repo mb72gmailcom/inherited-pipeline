@@ -7,6 +7,7 @@ from pathlib import Path
 from inherited.analyze import analyze_vcf, save_run_params
 from inherited.checkpoint import validate_file_suffix
 from inherited.filter import PREFIXES, filter_results
+from inherited.subtract import subtract_variants
 from inherited.constants import (
     DEFAULT_AB,
     DEFAULT_AB_HOM,
@@ -243,6 +244,29 @@ def build_parser() -> argparse.ArgumentParser:
         help="Drop a variant when its patient count is > this value",
     )
 
+    subtract_cmd = subparsers.add_parser(
+        "subtract",
+        help="Keep variants present in one VCF tree and absent from the paired file",
+    )
+    subtract_cmd.add_argument(
+        "--input-dir1",
+        required=True,
+        type=Path,
+        help="Directory of chromosome VCFs to keep",
+    )
+    subtract_cmd.add_argument(
+        "--input-dir2",
+        required=True,
+        type=Path,
+        help="Directory of paired VCFs whose variants are removed",
+    )
+    subtract_cmd.add_argument(
+        "--output-dir",
+        required=True,
+        type=Path,
+        help="Directory for variants_${start}_${end}.vcf files",
+    )
+
     return parser
 
 
@@ -261,6 +285,10 @@ def main(argv: list[str] | None = None) -> None:
 
     if args.command == "filter":
         _run_filter(args)
+        return
+
+    if args.command == "subtract":
+        _run_subtract(args)
         return
 
     if args.command == "analyze":
@@ -414,6 +442,15 @@ def _run_filter(args: argparse.Namespace) -> None:
             f"and TSVs to {sites_dir}"
         )
     print(f"Wrote parameters to {args.output_dir / 'params.json'}")
+
+
+def _run_subtract(args: argparse.Namespace) -> None:
+    try:
+        subtract_variants(args.input_dir1, args.input_dir2, args.output_dir)
+    except ValueError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        raise SystemExit(1) from exc
+    print(f"Wrote subtracted VCFs to {args.output_dir}")
 
 
 if __name__ == "__main__":
