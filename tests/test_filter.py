@@ -4,7 +4,7 @@ from pathlib import Path
 import pytest
 
 from inherited.cli import build_parser, main
-from inherited.filter import VCF_HEADER, TSV_HEADER, filter_results
+from inherited.filter import TSV_HEADER, filter_results
 
 SHORT_HEADER = "#CHROM\tPOS\tID\tREF\tALT\tPATIENTS\n"
 
@@ -107,21 +107,23 @@ def test_both_caps_write_vcf_and_sites(tmp_path: Path):
     )
 
     assert sites == tmp_path / "kept-sites"
-    assert (output / "chr21" / "inherited_00000.vcf").read_text(encoding="utf-8") == VCF_HEADER
+    assert (output / "chr21" / "variants_00000.vcf").read_text(encoding="utf-8") == ""
+    assert not (output / "chr21" / "inherited_00000.vcf").exists()
     assert (sites / "chr21" / "inherited_00000.tsv").read_text(encoding="utf-8") == TSV_HEADER
-    assert (output / "chr22" / "inherited_00000.vcf").read_text(encoding="utf-8") == (
-        VCF_HEADER + "chr22\t50\t.\tA\tC\n"
+    assert (output / "chr22" / "variants_00000.vcf").read_text(encoding="utf-8") == (
+        "chr22\t50\t.\tA\tC\n"
     )
     assert (sites / "chr22" / "inherited_00000.tsv").read_text(encoding="utf-8") == (
         TSV_HEADER + "chr22\t50\t.\tA\tC\tp2\n"
     )
-    assert (output / "chrX" / "inherited_males_nonPar_00000.vcf").read_text(
+    assert (output / "chrX" / "variants_males_nonPar_00000.vcf").read_text(
         encoding="utf-8"
-    ) == (VCF_HEADER + "chrX\t70\t.\tA\tG\n")
+    ) == "chrX\t70\t.\tA\tG\n"
     assert (sites / "chrX" / "inherited_males_nonPar_00000.tsv").read_text(
         encoding="utf-8"
     ) == (TSV_HEADER + "chrX\t70\t.\tA\tG\tp3\n")
     assert not (output / "chr22" / "denovo_00000.vcf").exists()
+    assert not (sites / "chr22" / "denovo_00000.tsv").exists()
     assert not (sites / "notes").exists()
     assert json.loads((output / "params.json").read_text(encoding="utf-8")) == {
         "input_dir": str(source.resolve()),
@@ -227,3 +229,19 @@ def test_keeps_patient_order(tmp_path: Path):
     )
     text = (sites / "chr2" / "denovo.tsv").read_text(encoding="utf-8")
     assert text.endswith("chr2\t10\t.\tA\tG\tp3;p1;p2\n")
+    vcf = (tmp_path / "kept" / "chr2" / "variants.vcf").read_text(encoding="utf-8")
+    assert vcf == "chr2\t10\t.\tA\tG\n"
+
+
+def test_vcf_shard_name_drops_prefix_and_header(tmp_path: Path):
+    source = tmp_path / "results"
+    _write(
+        source / "chr21" / "inherited_10000001_12500000.tsv",
+        "chr21\t10000001\t.\tA\tG\tp1\n",
+    )
+    sites = filter_results(source, tmp_path / "kept", "inherited", patient_cap=5)
+    vcf = tmp_path / "kept" / "chr21" / "variants_10000001_12500000.vcf"
+    assert vcf.read_text(encoding="utf-8") == "chr21\t10000001\t.\tA\tG\n"
+    assert (sites / "chr21" / "inherited_10000001_12500000.tsv").read_text(
+        encoding="utf-8"
+    ).startswith(TSV_HEADER)

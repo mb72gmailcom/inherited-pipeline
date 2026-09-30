@@ -11,7 +11,6 @@ PREFIXES = ("inherited", "denovo", "mendelian_bad")
 
 _CHROM_DIR = re.compile(r"^chr(\d+|X|Y)$")
 
-VCF_HEADER = "##fileformat=VCFv4.2\n#CHROM\tPOS\tID\tREF\tALT\n"
 TSV_HEADER = "#CHROM\tPOS\tID\tREF\tALT\tPATIENTS\n"
 _HIST_HEADER = "count\tn\n"
 _CAP_DISABLED = "disabled"
@@ -57,6 +56,7 @@ def filter_results(
             output_dir,
             sites_dir,
             person_counts,
+            prefix,
             variant_cap,
             patient_cap,
         )
@@ -171,23 +171,27 @@ def _write_histogram(path: Path, counts: Counter[int]) -> None:
             handle.write(f"{count}\t{counts[count]}\n")
 
 
+def _vcf_name(stem: str, prefix: str) -> str:
+    return f"variants{stem.removeprefix(prefix)}.vcf"
+
+
 def _write_filtered(
     tsv_files: list[tuple[str, Path]],
     output_dir: Path,
     sites_dir: Path,
     person_counts: Counter[str],
+    prefix: str,
     variant_cap: int | None,
     patient_cap: int | None,
 ) -> None:
     for chrom, path in tsv_files:
-        vcf_path = output_dir / chrom / f"{path.stem}.vcf"
+        vcf_path = output_dir / chrom / _vcf_name(path.stem, prefix)
         tsv_path = sites_dir / chrom / path.name
         vcf_path.parent.mkdir(parents=True, exist_ok=True)
         tsv_path.parent.mkdir(parents=True, exist_ok=True)
         with vcf_path.open("w", encoding="utf-8") as vcf, tsv_path.open(
             "w", encoding="utf-8"
         ) as tsv:
-            vcf.write(VCF_HEADER)
             tsv.write(TSV_HEADER)
             for columns, patients in _iter_short_rows(path):
                 if patient_cap is not None and len(patients) > patient_cap:
