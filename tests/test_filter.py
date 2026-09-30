@@ -87,9 +87,9 @@ def test_histograms_without_caps(tmp_path: Path):
     assert json.loads((output / "params.json").read_text(encoding="utf-8")) == {
         "input_dir": str(source.resolve()),
         "output_dir": str(output.resolve()),
-        "patient_cap": None,
+        "patient_cap": "disabled",
         "prefix": "inherited",
-        "variant_cap": None,
+        "variant_cap": "disabled",
     }
 
 
@@ -133,26 +133,45 @@ def test_both_caps_write_vcf_and_sites(tmp_path: Path):
     assert not (sites / "params.json").exists()
 
 
-def test_one_cap_is_an_error(tmp_path: Path, capsys):
+def test_patient_cap_alone_drops_common_variants(tmp_path: Path):
     source = tmp_path / "results"
-    source.mkdir()
-    with pytest.raises(SystemExit) as exc:
-        main(
-            [
-                "filter",
-                "--input-dir",
-                str(source),
-                "--output-dir",
-                str(tmp_path / "kept"),
-                "--prefix",
-                "inherited",
-                "--patient-cap",
-                "2",
-            ]
-        )
-    assert exc.value.code == 1
-    assert "must be given together" in capsys.readouterr().err
-    assert not (tmp_path / "kept").exists()
+    output = tmp_path / "kept"
+    _cohort(source)
+
+    sites = filter_results(source, output, "inherited", patient_cap=2)
+
+    assert sites == tmp_path / "kept-sites"
+    assert (sites / "chr21" / "inherited_00000.tsv").read_text(encoding="utf-8") == (
+        TSV_HEADER + "chr21\t20\t.\tC\tT\tp1;p4\n" + "chr21\t30\t.\tG\tA\tp4\n"
+    )
+    assert (sites / "chr22" / "inherited_00000.tsv").read_text(encoding="utf-8") == (
+        TSV_HEADER + "chr22\t40\t.\tT\tC\tp1\n" + "chr22\t50\t.\tA\tC\tp2;p4\n"
+    )
+    params = json.loads((output / "params.json").read_text(encoding="utf-8"))
+    assert params["patient_cap"] == 2
+    assert params["variant_cap"] == "disabled"
+
+
+def test_variant_cap_alone_drops_high_burden_people(tmp_path: Path):
+    source = tmp_path / "results"
+    output = tmp_path / "kept"
+    _cohort(source)
+
+    sites = filter_results(source, output, "inherited", variant_cap=2)
+
+    assert sites == tmp_path / "kept-sites"
+    assert (sites / "chr21" / "inherited_00000.tsv").read_text(encoding="utf-8") == (
+        TSV_HEADER + "chr21\t10\t.\tA\tG\tp2;p3\n"
+    )
+    assert (sites / "chr22" / "inherited_00000.tsv").read_text(encoding="utf-8") == (
+        TSV_HEADER + "chr22\t50\t.\tA\tC\tp2\n"
+    )
+    assert (sites / "chrX" / "inherited_males_nonPar_00000.tsv").read_text(
+        encoding="utf-8"
+    ) == (TSV_HEADER + "chrX\t70\t.\tA\tG\tp3\n")
+    params = json.loads((output / "params.json").read_text(encoding="utf-8"))
+    assert params["variant_cap"] == 2
+    assert params["patient_cap"] == "disabled"
 
 
 def test_full_format_header_requires_short_format(tmp_path: Path, capsys):

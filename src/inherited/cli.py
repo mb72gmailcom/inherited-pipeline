@@ -220,7 +220,7 @@ def build_parser() -> argparse.ArgumentParser:
         required=True,
         type=Path,
         help=(
-            "Directory for histograms and, when both caps are set, filtered VCFs. "
+            "Directory for histograms and, when a cap is set, filtered VCFs. "
             "Filtered TSVs are written to this path with -sites appended"
         ),
     )

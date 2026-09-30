@@ -14,6 +14,7 @@ _CHROM_DIR = re.compile(r"^chr(\d+|X|Y)$")
 VCF_HEADER = "##fileformat=VCFv4.2\n#CHROM\tPOS\tID\tREF\tALT\n"
 TSV_HEADER = "#CHROM\tPOS\tID\tREF\tALT\tPATIENTS\n"
 _HIST_HEADER = "count\tn\n"
+_CAP_DISABLED = "disabled"
 
 
 def filter_results(
@@ -24,9 +25,9 @@ def filter_results(
     variant_cap: int | None = None,
     patient_cap: int | None = None,
 ) -> Path | None:
-    """Count variants and, when both caps are set, write filtered VCF and TSV trees.
+    """Count variants and, when a cap is set, write filtered VCF and TSV trees.
 
-    Returns the ``-sites`` directory when caps are applied, otherwise ``None``.
+    Returns the ``-sites`` directory when at least one cap is applied, otherwise ``None``.
     """
     if prefix not in PREFIXES:
         raise ValueError(
@@ -48,7 +49,7 @@ def filter_results(
         carrier_counts,
     )
     sites_dir = None
-    if variant_cap is not None and patient_cap is not None:
+    if variant_cap is not None or patient_cap is not None:
         sites_dir = output_dir.with_name(output_dir.name + "-sites")
         sites_dir.mkdir(parents=True, exist_ok=True)
         _write_filtered(
@@ -70,8 +71,6 @@ def filter_results(
 
 
 def _validate_caps(variant_cap: int | None, patient_cap: int | None) -> None:
-    if (variant_cap is None) != (patient_cap is None):
-        raise ValueError("--variant-cap and --patient-cap must be given together")
     for name, value in (("--variant-cap", variant_cap), ("--patient-cap", patient_cap)):
         if value is not None and value < 0:
             raise ValueError(f"{name} must be an integer >= 0")
@@ -150,13 +149,19 @@ def _write_params(
     payload = {
         "input_dir": str(input_dir.resolve()),
         "output_dir": str(output_dir.resolve()),
-        "patient_cap": patient_cap,
+        "patient_cap": _cap_param(patient_cap),
         "prefix": prefix,
-        "variant_cap": variant_cap,
+        "variant_cap": _cap_param(variant_cap),
     }
     with params_path.open("w", encoding="utf-8") as handle:
         json.dump(payload, handle, indent=2, sort_keys=True)
     return params_path
+
+
+def _cap_param(value: int | None) -> int | str:
+    if value is None:
+        return _CAP_DISABLED
+    return value
 
 
 def _write_histogram(path: Path, counts: Counter[int]) -> None:
@@ -171,8 +176,8 @@ def _write_filtered(
     output_dir: Path,
     sites_dir: Path,
     person_counts: Counter[str],
-    variant_cap: int,
-    patient_cap: int,
+    variant_cap: int | None,
+    patient_cap: int | None,
 ) -> None:
     for chrom, path in tsv_files:
         vcf_path = output_dir / chrom / f"{path.stem}.vcf"
@@ -185,13 +190,16 @@ def _write_filtered(
             vcf.write(VCF_HEADER)
             tsv.write(TSV_HEADER)
             for columns, patients in _iter_short_rows(path):
-                if len(patients) > patient_cap:
+                if patient_cap is not None and len(patients) > patient_cap:
                     continue
-                kept = [
-                    patient
-                    for patient in patients
-                    if person_counts[patient] <= variant_cap
-                ]
+                if variant_cap is None:
+                    kept = patients
+                else:
+                    kept = [
+                        patient
+                        for patient in patients
+                        if person_counts[patient] <= variant_cap
+                    ]
                 if not kept:
                     continue
                 site = "\t".join(columns)
