@@ -450,7 +450,8 @@ def _run_subtract(args: argparse.Namespace) -> None:
     except ValueError as exc:
         print(f"error: {exc}", file=sys.stderr)
         raise SystemExit(1) from exc
-    print(f"Wrote subtracted VCFs to {args.output_dir}")
+    sites_dir = args.output_dir.with_name(args.output_dir.name + "-sites")
+    print(f"Wrote subtracted VCFs to {args.output_dir} and TSVs to {sites_dir}")
 
 
 if __name__ == "__main__":
