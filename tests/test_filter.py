@@ -175,12 +175,60 @@ def test_variant_cap_alone_drops_high_burden_people(tmp_path: Path):
     assert params["patient_cap"] == "disabled"
 
 
-def test_full_format_header_requires_short_format(tmp_path: Path, capsys):
+FULL_HEADER = "#CHROM\tPOS\tID\tREF\tALT\tTRIO_CALLS\n"
+
+
+def test_trio_calls_keeps_genotypes(tmp_path: Path):
     source = tmp_path / "results" / "chr21"
     source.mkdir(parents=True)
     (source / "inherited_00000.tsv").write_text(
-        "#CHROM\tPOS\tID\tREF\tALT\tTRIO_CALLS\n"
+        FULL_HEADER
+        + "chr21\t10\t.\tG\tA\tSP1=0/1|0/0|0/1|99\n"
+        + "chr21\t20\t.\tT\tG\tSP2=0/0|0/1|0/1|99;SP1=0/1|0/0|0/1|99;SP3=0/1|0/1|99\n",
+        encoding="utf-8",
+    )
+    output = tmp_path / "kept"
+    sites = filter_results(source.parent, output, "inherited", variant_cap=1)
+
+    assert (output / "inherited_variants_per_person_hist.tsv").read_text(
+        encoding="utf-8"
+    ) == ("count\tn\n1\t2\n2\t1\n")
+    assert (output / "inherited_patients_per_variant_hist.tsv").read_text(
+        encoding="utf-8"
+    ) == ("count\tn\n1\t1\n3\t1\n")
+    assert (output / "chr21" / "variants_00000.vcf").read_text(encoding="utf-8") == (
+        "chr21\t20\t.\tT\tG\n"
+    )
+    assert (sites / "chr21" / "inherited_00000.tsv").read_text(encoding="utf-8") == (
+        FULL_HEADER + "chr21\t20\t.\tT\tG\tSP2=0/0|0/1|0/1|99;SP3=0/1|0/1|99\n"
+    )
+
+    capped = tmp_path / "patient-cap"
+    sites = filter_results(source.parent, capped, "inherited", patient_cap=1)
+    assert (sites / "chr21" / "inherited_00000.tsv").read_text(encoding="utf-8") == (
+        FULL_HEADER + "chr21\t10\t.\tG\tA\tSP1=0/1|0/0|0/1|99\n"
+    )
+
+
+def test_patients_header_rejects_trio_payload(tmp_path: Path):
+    source = tmp_path / "results"
+    _write(
+        source / "chr21" / "mendelian_bad.tsv",
         "chr21\t10\t.\tA\tG\tp1=0/1|0/0|0/1|30\n",
+    )
+    output = tmp_path / "kept"
+    with pytest.raises(ValueError, match="mixes PATIENTS and TRIO_CALLS"):
+        filter_results(source, output, "mendelian_bad", variant_cap=5, patient_cap=5)
+    assert not output.exists()
+
+
+def test_mixed_last_columns_writes_nothing(tmp_path: Path, capsys):
+    source = tmp_path / "results"
+    _write(source / "chr21" / "inherited_00000.tsv", "chr21\t10\t.\tA\tG\tp1\n")
+    trio = source / "chr22" / "inherited_00000.tsv"
+    trio.parent.mkdir(parents=True)
+    trio.write_text(
+        FULL_HEADER + "chr22\t40\t.\tT\tC\tSP1=0/1|0/0|0/1|99\n",
         encoding="utf-8",
     )
     output = tmp_path / "kept"
@@ -189,7 +237,7 @@ def test_full_format_header_requires_short_format(tmp_path: Path, capsys):
             [
                 "filter",
                 "--input-dir",
-                str(tmp_path / "results"),
+                str(source),
                 "--output-dir",
                 str(output),
                 "--prefix",
@@ -198,19 +246,13 @@ def test_full_format_header_requires_short_format(tmp_path: Path, capsys):
         )
     assert exc.value.code == 1
     err = capsys.readouterr().err
-    assert err.startswith("error: ")
-    assert "inherited_00000.tsv requires input in short format" in err
-    assert not output.exists()
-
-
-def test_full_format_payload_requires_short_format(tmp_path: Path):
-    source = tmp_path / "results"
-    _write(
-        source / "chr21" / "mendelian_bad.tsv",
-        "chr21\t10\t.\tA\tG\tp1=0/1|0/0|0/1|30\n",
+    assert err == (
+        f"error: mixed last columns in {source}: "
+        "chr21/inherited_00000.tsv has PATIENTS and "
+        "chr22/inherited_00000.tsv has TRIO_CALLS\n"
     )
-    with pytest.raises(ValueError, match="requires input in short format"):
-        filter_results(source, tmp_path / "kept", "mendelian_bad", variant_cap=5, patient_cap=5)
+    assert not output.exists()
+    assert not (tmp_path / "kept-sites").exists()
 
 
 def test_keeps_patient_order(tmp_path: Path):

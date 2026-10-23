@@ -12,6 +12,10 @@ PREFIXES = ("inherited", "denovo", "mendelian_bad")
 _CHROM_DIR = re.compile(r"^chr(\d+|X|Y)$")
 
 TSV_HEADER = "#CHROM\tPOS\tID\tREF\tALT\tPATIENTS\n"
+_TRIO_HEADER = "#CHROM\tPOS\tID\tREF\tALT\tTRIO_CALLS\n"
+_PATIENTS = "PATIENTS"
+_TRIO_CALLS = "TRIO_CALLS"
+_COLUMNS = {_PATIENTS, _TRIO_CALLS}
 _HIST_HEADER = "count\tn\n"
 _CAP_DISABLED = "disabled"
 
@@ -26,7 +30,9 @@ def filter_results(
 ) -> Path | None:
     """Count variants and, when a cap is set, write filtered VCF and TSV trees.
 
-    Returns the ``-sites`` directory when at least one cap is applied, otherwise ``None``.
+    The last column may be ``PATIENTS`` or ``TRIO_CALLS``. A directory that
+    mixes the two stops before any output is written. Returns the ``-sites``
+    directory when at least one cap is applied, otherwise ``None``.
     """
     if prefix not in PREFIXES:
         raise ValueError(
@@ -37,7 +43,7 @@ def filter_results(
         raise ValueError(f"input directory not found: {input_dir}")
 
     tsv_files = _discover_tsv_files(input_dir, prefix)
-    person_counts, carrier_counts = _count_variants(tsv_files)
+    person_counts, carrier_counts, column = _count_variants(input_dir, tsv_files)
     output_dir.mkdir(parents=True, exist_ok=True)
     _write_histogram(
         output_dir / f"{prefix}_variants_per_person_hist.tsv",
@@ -57,6 +63,7 @@ def filter_results(
             sites_dir,
             person_counts,
             prefix,
+            column,
             variant_cap,
             patient_cap,
         )
@@ -107,34 +114,107 @@ def _chrom_sort_key(name: str) -> tuple[int, int | str]:
     return (0, int(suffix))
 
 
-def _count_variants(tsv_files: list[tuple[str, Path]]) -> tuple[Counter[str], Counter[int]]:
+def _count_variants(
+    input_dir: Path,
+    tsv_files: list[tuple[str, Path]],
+) -> tuple[Counter[str], Counter[int], str]:
     person_counts: Counter[str] = Counter()
     carrier_counts: Counter[int] = Counter()
+    chosen: str | None = None
+    chosen_path: Path | None = None
     for _chrom, path in tsv_files:
-        for _columns, patients in _iter_short_rows(path):
-            carrier_counts[len(patients)] += 1
-            person_counts.update(patients)
-    return person_counts, carrier_counts
+        column, rows = _iter_calls(path)
+        for _columns, calls in rows:
+            carrier_counts[len(calls)] += 1
+            person_counts.update(person for person, _piece in calls)
+        if column[0] is None:
+            continue
+        if chosen is None:
+            chosen = column[0]
+            chosen_path = path
+            continue
+        if column[0] != chosen:
+            assert chosen_path is not None
+            raise ValueError(
+                _mixed_message(input_dir, chosen, chosen_path, column[0], path)
+            )
+    return person_counts, carrier_counts, chosen or _PATIENTS
 
 
-def _iter_short_rows(path: Path):
-    with path.open(encoding="utf-8") as handle:
-        for line in handle:
-            line = line.rstrip("\r\n")
-            if not line:
-                continue
-            if line.startswith("#"):
-                if line.split("\t")[-1] == "TRIO_CALLS":
-                    raise ValueError(f"{path} requires input in short format")
-                continue
-            fields = line.split("\t")
-            if len(fields) < 6:
-                raise ValueError(f"{path} expected 6 tab-separated columns")
-            patients_field = fields[5]
-            if "=" in patients_field:
-                raise ValueError(f"{path} requires input in short format")
-            patients = [patient for patient in patients_field.split(";") if patient]
-            yield fields[:5], patients
+def _iter_calls(path: Path):
+    column: list[str | None] = [None]
+
+    def rows():
+        with path.open(encoding="utf-8") as handle:
+            for line in handle:
+                line = line.rstrip("\r\n")
+                if not line:
+                    continue
+                if line.startswith("#"):
+                    last = line.split("\t")[-1]
+                    if last in _COLUMNS:
+                        _set_column(column, path, last)
+                    continue
+                fields = line.split("\t")
+                if len(fields) < 6:
+                    raise ValueError(f"{path} expected 6 tab-separated columns")
+                payload = fields[5]
+                if payload:
+                    row_column = _TRIO_CALLS if "=" in payload else _PATIENTS
+                    _set_column(column, path, row_column)
+                elif column[0] is None:
+                    column[0] = _PATIENTS
+                if column[0] == _TRIO_CALLS:
+                    calls = _parse_trio_calls(path, payload)
+                else:
+                    calls = [(person, person) for person in payload.split(";") if person]
+                yield fields[:5], calls
+
+    return column, rows()
+
+
+def _set_column(column: list[str | None], path: Path, found: str) -> None:
+    current = column[0]
+    if current is None:
+        column[0] = found
+        return
+    if current != found:
+        raise ValueError(f"{path} mixes PATIENTS and TRIO_CALLS")
+
+
+def _parse_trio_calls(path: Path, payload: str) -> list[tuple[str, str]]:
+    calls: list[tuple[str, str]] = []
+    for part in payload.split(";"):
+        if not part:
+            continue
+        if "=" not in part:
+            raise ValueError(f"{path} TRIO_CALLS entry {part!r} is missing '='")
+        person, _genotypes = part.split("=", 1)
+        if not person:
+            raise ValueError(f"{path} TRIO_CALLS entry is missing a child id")
+        calls.append((person, part))
+    return calls
+
+
+def _mixed_message(
+    input_dir: Path,
+    left_column: str,
+    left_path: Path,
+    right_column: str,
+    right_path: Path,
+) -> str:
+    if left_column != _PATIENTS:
+        left_column, left_path, right_column, right_path = (
+            right_column,
+            right_path,
+            left_column,
+            left_path,
+        )
+    return (
+        f"mixed last columns in {input_dir}: "
+        f"{left_path.relative_to(input_dir).as_posix()} has {left_column} and "
+        f"{right_path.relative_to(input_dir).as_posix()} has {right_column}"
+    )
 
 
 def _write_params(
@@ -181,9 +261,11 @@ def _write_filtered(
     sites_dir: Path,
     person_counts: Counter[str],
     prefix: str,
+    column: str,
     variant_cap: int | None,
     patient_cap: int | None,
 ) -> None:
+    header = TSV_HEADER if column == _PATIENTS else _TRIO_HEADER
     for chrom, path in tsv_files:
         vcf_path = output_dir / chrom / _vcf_name(path.stem, prefix)
         tsv_path = sites_dir / chrom / path.name
@@ -193,25 +275,26 @@ def _write_filtered(
         with vcf_path.open("w", encoding="utf-8") as vcf, tsv_path.open(
             "w", encoding="utf-8"
         ) as tsv:
-            for columns, patients in _iter_short_rows(path):
-                if patient_cap is not None and len(patients) > patient_cap:
+            _column, rows = _iter_calls(path)
+            for columns, calls in rows:
+                if patient_cap is not None and len(calls) > patient_cap:
                     continue
                 if variant_cap is None:
-                    kept = patients
+                    kept = calls
                 else:
                     kept = [
-                        patient
-                        for patient in patients
-                        if person_counts[patient] <= variant_cap
+                        call
+                        for call in calls
+                        if person_counts[call[0]] <= variant_cap
                     ]
                 if not kept:
                     continue
                 if not wrote:
-                    tsv.write(TSV_HEADER)
+                    tsv.write(header)
                     wrote = True
                 site = "\t".join(columns)
                 vcf.write(f"{site}\n")
-                tsv.write(f"{site}\t{';'.join(kept)}\n")
+                tsv.write(f"{site}\t{';'.join(piece for _person, piece in kept)}\n")
         if not wrote:
             vcf_path.unlink()
             tsv_path.unlink()
