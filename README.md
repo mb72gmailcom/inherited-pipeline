@@ -230,6 +230,28 @@ python run.py analyze ... -o results/chr2 --resume
 
 Requires an existing incomplete `checkpoint.json`. With `--vcf`, also requires `--segment-size > 0`. With `--vcf-dir`, resume skips shards that ended at or before the checkpointed position.
 
+## VCF allele statistics
+
+`vcf-stats` reads one chromosome of cohort pVCFs and counts alleles. It uses chromosome, position, REF, and ALT only. Sample columns are not read. Pass `--chr` and `--prefix`. `--prefix` is the filename stem before `.chrN`.
+
+A whole-chromosome file is `{input-dir}/{prefix}.chr1.vcf.gz`. Position shards are `{input-dir}/chr1/{prefix}.chr1_{start}_{end}.vcf.gz`, read in start order. One chromosome is one run.
+
+```bash
+python run.py vcf-stats \
+  --input-dir /data/pvcf \
+  --chr 1 \
+  --prefix SPARK.WGS.2026_08.gatk \
+  --output stats/chr1.json
+```
+
+Each ALT is trimmed before it is classified. `*`, `<...>`, and breakends are counted in `symbolic_count` and are not trimmed. `bi_*` counts are biallelic lines (one ALT). `multi_*` counts are the alleles on lines with two or more ALT tokens. `*_raw` is the SNV or MNV class before trimming. `d_indel` counts insertions and deletions by the longer allele length. `d_dl` uses `len(ref) - len(alt)`, so a deletion is a positive key and an insertion is a negative key.
+
+Add the chromosome JSON files without reading the VCFs again:
+
+```bash
+python run.py vcf-stats --sum --input-dir stats --output stats/overall.json
+```
+
 ## Tests
 
 ```bash

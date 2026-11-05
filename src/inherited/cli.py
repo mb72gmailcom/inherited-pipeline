@@ -23,6 +23,7 @@ from inherited.constants import (
 from inherited.families import load_family_column_map
 from inherited.genotype import QualityFilters
 from inherited.shards import discover_vcf_shards
+from inherited.vcf_stats import collect_vcf_stats, sum_vcf_stats, write_vcf_stats
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -267,6 +268,38 @@ def build_parser() -> argparse.ArgumentParser:
         help="Directory for variants_${start}_${end}.vcf files",
     )
 
+    stats_cmd = subparsers.add_parser(
+        "vcf-stats",
+        help="Count SNV, MNV, insertion, and deletion alleles in one chromosome of pVCFs",
+    )
+    stats_cmd.add_argument(
+        "--input-dir",
+        required=True,
+        type=Path,
+        help="Directory of {prefix}.chrN.vcf.gz files, chrN shard directories, or vcf-stats JSON",
+    )
+    stats_cmd.add_argument(
+        "--output",
+        required=True,
+        type=Path,
+        help="JSON file for this chromosome, or for the sum of chromosome JSON files",
+    )
+    stats_cmd.add_argument(
+        "--chr",
+        default=None,
+        help="Chromosome to scan (1, X, Y, or chr1). Required unless --sum.",
+    )
+    stats_cmd.add_argument(
+        "--prefix",
+        default=None,
+        help="Filename prefix before .chrN. Required unless --sum.",
+    )
+    stats_cmd.add_argument(
+        "--sum",
+        action="store_true",
+        help="Add per-chromosome vcf-stats JSON files in --input-dir. Does not read VCFs.",
+    )
+
     return parser
 
 
@@ -285,6 +318,10 @@ def main(argv: list[str] | None = None) -> None:
 
     if args.command == "filter":
         _run_filter(args)
+        return
+
+    if args.command == "vcf-stats":
+        _run_vcf_stats(args)
         return
 
     if args.command == "subtract":
@@ -442,6 +479,23 @@ def _run_filter(args: argparse.Namespace) -> None:
             f"and TSVs to {sites_dir}"
         )
     print(f"Wrote parameters to {args.output_dir / 'params.json'}")
+
+
+def _run_vcf_stats(args: argparse.Namespace) -> None:
+    try:
+        if args.sum:
+            if args.chr or args.prefix:
+                raise ValueError("--sum does not take --chr or --prefix")
+            payload = sum_vcf_stats(args.input_dir)
+        else:
+            if not args.chr or not args.prefix:
+                raise ValueError("--chr and --prefix are required unless --sum is set")
+            payload = collect_vcf_stats(args.input_dir, args.chr, args.prefix)
+        write_vcf_stats(args.output, payload)
+    except (FileNotFoundError, ValueError, OSError) as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        raise SystemExit(1) from exc
+    print(f"Wrote {args.output}")
 
 
 def _run_subtract(args: argparse.Namespace) -> None:
