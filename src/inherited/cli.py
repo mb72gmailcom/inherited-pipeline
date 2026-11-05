@@ -23,7 +23,12 @@ from inherited.constants import (
 from inherited.families import load_family_column_map
 from inherited.genotype import QualityFilters
 from inherited.shards import discover_vcf_shards
-from inherited.vcf_stats import collect_vcf_stats, sum_vcf_stats, write_vcf_stats
+from inherited.vcf_stats import (
+    collect_vcf_stats,
+    sum_vcf_stats,
+    write_chromosome_stats,
+    write_sum_stats,
+)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -276,13 +281,14 @@ def build_parser() -> argparse.ArgumentParser:
         "--input-dir",
         required=True,
         type=Path,
-        help="Directory of {prefix}.chrN.vcf.gz files, chrN shard directories, or vcf-stats JSON",
+        help="Directory of {prefix}.chrN.vcf.gz files, or of chrN shard directories. "
+        "With --sum, the parent of the per-chromosome stats directories.",
     )
     stats_cmd.add_argument(
-        "--output",
+        "--output-dir",
         required=True,
         type=Path,
-        help="JSON file for this chromosome, or for the sum of chromosome JSON files",
+        help="Parent directory for chrN stats. With --sum, the directory that receives the totals.",
     )
     stats_cmd.add_argument(
         "--chr",
@@ -297,7 +303,7 @@ def build_parser() -> argparse.ArgumentParser:
     stats_cmd.add_argument(
         "--sum",
         action="store_true",
-        help="Add per-chromosome vcf-stats JSON files in --input-dir. Does not read VCFs.",
+        help="Add chrN stats directories under --input-dir. Does not read VCFs.",
     )
 
     return parser
@@ -487,15 +493,16 @@ def _run_vcf_stats(args: argparse.Namespace) -> None:
             if args.chr or args.prefix:
                 raise ValueError("--sum does not take --chr or --prefix")
             payload = sum_vcf_stats(args.input_dir)
+            destination = write_sum_stats(args.output_dir, payload)
         else:
             if not args.chr or not args.prefix:
                 raise ValueError("--chr and --prefix are required unless --sum is set")
             payload = collect_vcf_stats(args.input_dir, args.chr, args.prefix)
-        write_vcf_stats(args.output, payload)
+            destination = write_chromosome_stats(args.output_dir, payload)
     except (FileNotFoundError, ValueError, OSError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         raise SystemExit(1) from exc
-    print(f"Wrote {args.output}")
+    print(f"Wrote {destination}")
 
 
 def _run_subtract(args: argparse.Namespace) -> None:

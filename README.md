@@ -241,15 +241,19 @@ python run.py vcf-stats \
   --input-dir /data/pvcf \
   --chr 1 \
   --prefix SPARK.WGS.2026_08.gatk \
-  --output stats/chr1.json
+  --output-dir stats
 ```
 
-Each ALT is trimmed before it is classified. `*`, `<...>`, and breakends are counted in `symbolic_count` and are not trimmed. `bi_*` counts are biallelic lines (one ALT). `multi_*` counts are the alleles on lines with two or more ALT tokens. `*_raw` is the SNV or MNV class before trimming. `d_indel` counts insertions and deletions by the longer allele length. `d_dl` uses `len(ref) - len(alt)`, so a deletion is a positive key and an insertion is a negative key.
+`--output-dir` is the parent. The chromosome from `--chr` is added, so this writes `stats/chr1/summary.json`, `stats/chr1/indels-stats.json`, and `stats/chr1/insertions-deletions-stats.json`.
 
-Add the chromosome JSON files without reading the VCFs again:
+`summary.json` holds the line and allele counts. `indels-stats.json` is `d_indel`, keyed by the longer allele length. `insertions-deletions-stats.json` is `d_dl`, keyed by `len(ref) - len(alt)`: a positive key is a deletion and a negative key is an insertion.
+
+Each ALT is trimmed before it is classified. `*`, `<...>`, and breakends are counted in `symbolic_count` and are not trimmed. `bi_*` counts are biallelic lines (one ALT). `multi_*` counts are the alleles on lines with two or more ALT tokens. `*_raw` is the SNV or MNV class before trimming.
+
+Add the `chr*` directories without reading the VCFs again. The totals are written directly into `--output-dir`:
 
 ```bash
-python run.py vcf-stats --sum --input-dir stats --output stats/overall.json
+python run.py vcf-stats --sum --input-dir stats --output-dir stats/overall
 ```
 
 ## Tests

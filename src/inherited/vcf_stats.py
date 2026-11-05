@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import gzip
 import json
+import re
 from pathlib import Path
 from typing import TextIO
 
@@ -9,6 +10,11 @@ from inherited.shards import discover_vcf_shards
 
 STATS_KIND = "vcf-stats"
 STATS_VERSION = 1
+SUMMARY_NAME = "summary.json"
+INDEL_STATS_NAME = "indels-stats.json"
+LENGTH_DIFF_STATS_NAME = "insertions-deletions-stats.json"
+
+_CHROM_DIR_NAME = re.compile(r"^chr(?:\d+|X|Y|M)$")
 
 _COUNT_FIELDS = (
     "bi_line_count",
@@ -98,36 +104,31 @@ def collect_vcf_stats(input_dir: Path, chrom: str, prefix: str) -> dict[str, obj
 
 
 def sum_vcf_stats(input_dir: Path) -> dict[str, object]:
-    """Add per-chromosome ``vcf-stats`` JSON files. Does not read VCFs."""
+    """Add per-chromosome stats directories. Does not read VCFs."""
     if not input_dir.is_dir():
         raise FileNotFoundError(f"Stats directory not found: {input_dir}")
-    payloads = []
-    for path in sorted(input_dir.iterdir()):
-        if not path.is_file() or path.suffix != ".json":
-            continue
-        payload = json.loads(path.read_text(encoding="utf-8"))
-        if not isinstance(payload, dict) or payload.get("kind") != STATS_KIND:
-            continue
-        if payload.get("sum") is True or "chrom" not in payload:
-            continue
-        if payload.get("version") != STATS_VERSION:
-            raise ValueError(
-                f"Unsupported vcf-stats version in {path.name}: {payload.get('version')}"
-            )
-        payloads.append(payload)
-    if not payloads:
-        raise FileNotFoundError(f"No per-chromosome vcf-stats JSON files in {input_dir}")
+    chrom_dirs = sorted(
+        (
+            path
+            for path in input_dir.iterdir()
+            if path.is_dir() and _CHROM_DIR_NAME.fullmatch(path.name)
+        ),
+        key=lambda path: _chrom_sort_key(path.name),
+    )
+    if not chrom_dirs:
+        raise FileNotFoundError(f"No chrN stats directories in {input_dir}")
 
     totals = {name: 0 for name in _COUNT_FIELDS}
     indel_lengths: dict[int, int] = {}
     length_diffs: dict[int, int] = {}
     chroms: list[str] = []
-    for payload in payloads:
-        chroms.append(str(payload["chrom"]))
+    for chrom_dir in chrom_dirs:
+        summary = _read_summary(chrom_dir)
+        chroms.append(str(summary["chrom"]))
         for name in _COUNT_FIELDS:
-            totals[name] += int(payload.get(name, 0))
-        _add_distribution(indel_lengths, payload.get("d_indel", {}))
-        _add_distribution(length_diffs, payload.get("d_dl", {}))
+            totals[name] += int(summary.get(name, 0))
+        _add_distribution(indel_lengths, _read_distribution(chrom_dir / INDEL_STATS_NAME))
+        _add_distribution(length_diffs, _read_distribution(chrom_dir / LENGTH_DIFF_STATS_NAME))
     return {
         "kind": STATS_KIND,
         "version": STATS_VERSION,
@@ -139,9 +140,26 @@ def sum_vcf_stats(input_dir: Path) -> dict[str, object]:
     }
 
 
-def write_vcf_stats(path: Path, payload: dict[str, object]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+def write_chromosome_stats(output_dir: Path, payload: dict[str, object]) -> Path:
+    """Write ``output_dir/chrN/`` with the summary and the two indel distributions."""
+    chrom = str(payload["chrom"])
+    destination = output_dir / chrom
+    destination.mkdir(parents=True, exist_ok=True)
+    summary = {key: value for key, value in payload.items() if key not in {"d_indel", "d_dl"}}
+    _write_json(destination / SUMMARY_NAME, summary)
+    _write_json(destination / INDEL_STATS_NAME, payload["d_indel"])
+    _write_json(destination / LENGTH_DIFF_STATS_NAME, payload["d_dl"])
+    return destination
+
+
+def write_sum_stats(output_dir: Path, payload: dict[str, object]) -> Path:
+    """Write the three stats files directly into ``output_dir``."""
+    output_dir.mkdir(parents=True, exist_ok=True)
+    summary = {key: value for key, value in payload.items() if key not in {"d_indel", "d_dl"}}
+    _write_json(output_dir / SUMMARY_NAME, summary)
+    _write_json(output_dir / INDEL_STATS_NAME, payload["d_indel"])
+    _write_json(output_dir / LENGTH_DIFF_STATS_NAME, payload["d_dl"])
+    return output_dir
 
 
 def trim_alleles(pos: int, ref: str, alt: str) -> tuple[int, str, str] | None:
@@ -288,6 +306,42 @@ def _classify(ref: str, alt: str) -> str:
 
 def _is_symbolic(alt: str) -> bool:
     return alt == "*" or alt.startswith("<") or "[" in alt or "]" in alt
+
+
+def _chrom_sort_key(name: str) -> tuple[int, int | str]:
+    rest = name[3:]
+    if rest.isdigit():
+        return (0, int(rest))
+    return (1, rest)
+
+
+def _read_summary(chrom_dir: Path) -> dict[str, object]:
+    path = chrom_dir / SUMMARY_NAME
+    if not path.is_file():
+        raise FileNotFoundError(f"Missing {SUMMARY_NAME} in {chrom_dir}")
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(payload, dict) or payload.get("kind") != STATS_KIND:
+        raise ValueError(f"{path} is not a vcf-stats summary")
+    if payload.get("version") != STATS_VERSION:
+        raise ValueError(f"Unsupported vcf-stats version in {path}: {payload.get('version')}")
+    if payload.get("chrom") != chrom_dir.name:
+        raise ValueError(
+            f"{path} records chromosome {payload.get('chrom')!r}, not {chrom_dir.name}"
+        )
+    return payload
+
+
+def _read_distribution(path: Path) -> dict[str, object]:
+    if not path.is_file():
+        raise FileNotFoundError(f"Missing {path.name} in {path.parent}")
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(payload, dict):
+        raise ValueError(f"{path} must be an object of length counts")
+    return payload
+
+
+def _write_json(path: Path, payload: object) -> None:
+    path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
 
 def _distribution(counts: dict[int, int]) -> dict[str, int]:

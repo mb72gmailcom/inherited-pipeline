@@ -5,7 +5,12 @@ from pathlib import Path
 import pytest
 
 from inherited.cli import main
-from inherited.vcf_stats import collect_vcf_stats, sum_vcf_stats, trim_alleles
+from inherited.vcf_stats import (
+    collect_vcf_stats,
+    sum_vcf_stats,
+    trim_alleles,
+    write_chromosome_stats,
+)
 
 _HEADER = (
     "##fileformat=VCFv4.2\n"
@@ -108,13 +113,11 @@ def test_whole_file_and_shards_together_are_an_error(tmp_path: Path) -> None:
 def test_sum_adds_chromosome_json_files(tmp_path: Path) -> None:
     _write_vcf(tmp_path / "vcfs" / "cohort.chr1.vcf", _site("chr1", 10, "A", "C"))
     _write_vcf(tmp_path / "vcfs" / "cohort.chr2.vcf", _site("chr2", 10, "AA", "CA"))
-    first = collect_vcf_stats(tmp_path / "vcfs", "1", "cohort")
-    second = collect_vcf_stats(tmp_path / "vcfs", "2", "cohort")
     stats_dir = tmp_path / "stats"
-    stats_dir.mkdir()
-    (stats_dir / "chr1.json").write_text(json.dumps(first), encoding="utf-8")
-    (stats_dir / "chr2.json").write_text(json.dumps(second), encoding="utf-8")
+    write_chromosome_stats(stats_dir, collect_vcf_stats(tmp_path / "vcfs", "1", "cohort"))
+    write_chromosome_stats(stats_dir, collect_vcf_stats(tmp_path / "vcfs", "2", "cohort"))
     (stats_dir / "notes.json").write_text("{}", encoding="utf-8")
+    (stats_dir / "overall").mkdir()
 
     total = sum_vcf_stats(stats_dir)
 
@@ -126,9 +129,9 @@ def test_sum_adds_chromosome_json_files(tmp_path: Path) -> None:
     assert total["bi_mnv_count_raw"] == 1
 
 
-def test_cli_writes_a_chromosome_json(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+def test_cli_writes_the_chromosome_directory(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     _write_vcf(tmp_path / "cohort.chrX.vcf", _site("X", 10, "A", "G"))
-    output = tmp_path / "out" / "chrX.json"
+    output_dir = tmp_path / "stats"
     main(
         [
             "vcf-stats",
@@ -138,10 +141,16 @@ def test_cli_writes_a_chromosome_json(tmp_path: Path, capsys: pytest.CaptureFixt
             "X",
             "--prefix",
             "cohort",
-            "--output",
-            str(output),
+            "--output-dir",
+            str(output_dir),
         ]
     )
-    payload = json.loads(output.read_text(encoding="utf-8"))
-    assert payload["bi_snv_count"] == 1
-    assert str(output) in capsys.readouterr().out
+    chrom_dir = output_dir / "chrX"
+    summary = json.loads((chrom_dir / "summary.json").read_text(encoding="utf-8"))
+    indels = json.loads((chrom_dir / "indels-stats.json").read_text(encoding="utf-8"))
+    diffs = json.loads((chrom_dir / "insertions-deletions-stats.json").read_text(encoding="utf-8"))
+    assert summary["bi_snv_count"] == 1
+    assert "d_indel" not in summary
+    assert indels == {}
+    assert diffs == {}
+    assert str(chrom_dir) in capsys.readouterr().out
