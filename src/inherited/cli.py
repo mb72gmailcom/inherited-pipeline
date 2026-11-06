@@ -4,6 +4,7 @@ import argparse
 import sys
 from pathlib import Path
 
+from inherited.alleles import validate_allele_mode
 from inherited.analyze import analyze_vcf, save_run_params
 from inherited.checkpoint import validate_file_suffix
 from inherited.filter import PREFIXES, filter_results
@@ -99,6 +100,33 @@ def build_parser() -> argparse.ArgumentParser:
         action=argparse.BooleanOptionalAction,
         default=True,
         help="Process multiallelic sites per alternate allele (default: True)",
+    )
+    analyze.add_argument(
+        "--trim",
+        action="store_true",
+        help=(
+            "Trim a shared prefix and suffix, then keep a one-base allele. "
+            "A padded multi-nucleotide variant such as AT/AG becomes T/G. "
+            "Indels and real multi-nucleotide variants are dropped."
+        ),
+    )
+    analyze.add_argument(
+        "--keep-indels",
+        action="store_true",
+        help=(
+            "Trim every allele, left-align indels, and keep indels and real "
+            "multi-nucleotide variants as well as one-base alleles. Requires --fasta."
+        ),
+    )
+    analyze.add_argument(
+        "--fasta",
+        type=Path,
+        default=None,
+        metavar="FILE",
+        help=(
+            "Uncompressed reference FASTA with a .fai index. "
+            "Required with --keep-indels and rejected without it."
+        ),
     )
     analyze.add_argument(
         "--af-threshold",
@@ -357,6 +385,16 @@ def main(argv: list[str] | None = None) -> None:
                 print(f"error: {exc}", file=sys.stderr)
                 raise SystemExit(1) from exc
         segment_size = 0 if file_suffix is not None else args.segment_size
+        try:
+            validate_allele_mode(
+                trim=args.trim,
+                keep_indels=args.keep_indels,
+                fasta=args.fasta,
+                multiallelic=args.multiallelic,
+            )
+        except ValueError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            raise SystemExit(1) from exc
         if args.vcf_dir is not None:
             if not args.vcf_pattern:
                 print("error: --vcf-dir requires --vcf-pattern", file=sys.stderr)
@@ -419,6 +457,9 @@ def main(argv: list[str] | None = None) -> None:
                 family_column_map=family_column_map,
                 qc=qc,
                 file_suffix=file_suffix,
+                trim=args.trim,
+                keep_indels=args.keep_indels,
+                fasta_path=args.fasta,
             )
         except (FileNotFoundError, ValueError) as exc:
             print(f"error: {exc}", file=sys.stderr)
@@ -445,6 +486,9 @@ def main(argv: list[str] | None = None) -> None:
             family_map_path=args.family_map,
             qc=qc,
             file_suffix=file_suffix,
+            trim=args.trim,
+            keep_indels=args.keep_indels,
+            fasta_path=args.fasta,
         )
         if vcf_shards is not None:
             output_label = "shard-labeled TSV files"

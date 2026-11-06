@@ -6,6 +6,7 @@ import re
 from pathlib import Path
 from typing import TextIO
 
+from inherited.alleles import trim_alleles
 from inherited.shards import discover_vcf_shards
 
 STATS_KIND = "vcf-stats"
@@ -224,25 +225,6 @@ def write_sum_stats(output_dir: Path, payload: dict[str, object]) -> Path:
     _write_json(output_dir / INDEL_STATS_NAME, payload["d_indel"])
     _write_json(output_dir / LENGTH_DIFF_STATS_NAME, payload["d_dl"])
     return output_dir
-
-
-def trim_alleles(pos: int, ref: str, alt: str) -> tuple[int, str, str] | None:
-    """Trim a shared prefix and suffix. A prefix trim shifts pos.
-
-    Returns None when the remaining REF and ALT are identical.
-    """
-    ref_bases = ref.upper()
-    alt_bases = alt.upper()
-    while len(ref_bases) > 1 and len(alt_bases) > 1 and ref_bases[-1] == alt_bases[-1]:
-        ref_bases = ref_bases[:-1]
-        alt_bases = alt_bases[:-1]
-    while len(ref_bases) > 1 and len(alt_bases) > 1 and ref_bases[0] == alt_bases[0]:
-        ref_bases = ref_bases[1:]
-        alt_bases = alt_bases[1:]
-        pos += 1
-    if ref_bases == alt_bases:
-        return None
-    return pos, ref_bases, alt_bases
 
 
 def _whole_chromosome_files(input_dir: Path, prefix: str, chrom: str) -> list[Path]:

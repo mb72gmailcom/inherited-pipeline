@@ -544,6 +544,15 @@ class ResultWriter:
         self._update_position(chrom, pos)
         self._maybe_rotate_segment()
 
+    def note_vcf_position(self, chrom: str, pos: str) -> None:
+        """Record the VCF line position for resume.
+
+        A trimmed or left-aligned output position must not move the checkpoint
+        ahead of a later VCF line.
+        """
+        self.last_chrom = chrom
+        self.last_pos = int(pos)
+
     def _update_position(self, chrom: str, pos: str) -> None:
         self.last_chrom = chrom
         self.last_pos = max(self.last_pos, int(pos))

@@ -478,3 +478,92 @@ def test_resume_skips_completed_vcf_shards(tmp_path):
     assert (out / "inherited_2501_5000.tsv").is_file()
     assert not (out / "inherited_1_2500.tsv").exists()
     assert len(read_result_tsv(out / "inherited_2501_5000.tsv")) == 1
+
+
+_INH = "0/1:30:15,15:0,0,0,0:30:0,30,30:."
+_HOM = "0/0:30:30,0:0,0,0,0:30:0,30,30:."
+
+
+def _allele_record(pos: int, ref: str, alt: str) -> str:
+    return (
+        f"22\t{pos}\t.\t{ref}\t{alt}\t.\t.\t.\tGT:DP:AD:SB:GQ:PL:RNC\t"
+        f"{_INH}\t{_INH}\t{_HOM}\n"
+    )
+
+
+def test_trim_keeps_only_the_one_base_allele_and_checkpoints_the_vcf_position(tmp_path):
+    vcf = tmp_path / "alleles.vcf"
+    vcf.write_text(
+        VCF_HEADER
+        + _allele_record(10, "AT", "AG")
+        + _allele_record(13, "GA", "G")
+        + _allele_record(16, "AA", "GG"),
+        encoding="utf-8",
+    )
+    af = tmp_path / "af.json"
+    af.write_text("{}\n", encoding="utf-8")
+    out = tmp_path / "out"
+    analyze_vcf(
+        vcf_path=vcf,
+        af_json_path=af,
+        family_file=FIXTURES / "families.tsv",
+        output_dir=out,
+        segment_size=0,
+        trim=True,
+    )
+
+    inherited = read_result_tsv(out / "inherited.tsv", short_format=True)
+    assert inherited == [("22", "11", "T", "G", ["child1"])]
+    per_variant = json.loads((out / "inherited_per_variant.json").read_text())
+    assert per_variant == {"chr22_11_T_G": 1}
+    checkpoint = load_checkpoint(out)
+    assert checkpoint is not None
+    assert checkpoint.last_pos == 16
+
+
+def test_keep_indels_left_aligns_and_keeps_mnvs(tmp_path):
+    sequence = "GC" + "T" * 10 + "G" + "A" * 10
+    fasta = tmp_path / "ref.fa"
+    blob = bytearray(b">chr22\n")
+    offset = len(blob)
+    width = 10
+    for start in range(0, len(sequence), width):
+        blob += sequence[start : start + width].encode() + b"\n"
+    fasta.write_bytes(blob)
+    Path(str(fasta) + ".fai").write_text(
+        f"chr22\t{len(sequence)}\t{offset}\t{width}\t{width + 1}\n",
+        encoding="utf-8",
+    )
+    vcf = tmp_path / "alleles.vcf"
+    vcf.write_text(
+        VCF_HEADER
+        + _allele_record(11, "TT", "T")
+        + _allele_record(13, "GA", "G")
+        + _allele_record(14, "AA", "AG")
+        + _allele_record(16, "AA", "GG"),
+        encoding="utf-8",
+    )
+    af = tmp_path / "af.json"
+    af.write_text('{"chr22_2_CT_C": 0.05}\n', encoding="utf-8")
+    out = tmp_path / "out"
+    analyze_vcf(
+        vcf_path=vcf,
+        af_json_path=af,
+        family_file=FIXTURES / "families.tsv",
+        output_dir=out,
+        segment_size=0,
+        keep_indels=True,
+        fasta_path=fasta,
+    )
+
+    inherited = read_result_tsv(out / "inherited.tsv", short_format=True)
+    assert [(row[1], row[2], row[3]) for row in inherited] == [
+        ("13", "GA", "G"),
+        ("15", "A", "G"),
+        ("16", "AA", "GG"),
+    ]
+    per_variant = json.loads((out / "inherited_per_variant.json").read_text())
+    assert set(per_variant) == {"chr22_13_GA_G", "chr22_15_A_G", "chr22_16_AA_GG"}
+    checkpoint = load_checkpoint(out)
+    assert checkpoint is not None
+    assert checkpoint.last_pos == 16

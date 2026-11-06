@@ -9,6 +9,12 @@ from typing import Any
 
 from inherited import __version__
 from inherited.af import is_rare, load_af_json
+from inherited.alleles import (
+    ReferenceFasta,
+    allele_key,
+    prepare_allele,
+    validate_allele_mode,
+)
 from inherited.checkpoint import load_checkpoint, suffixed_filename, validate_file_suffix
 from inherited.constants import (
     DEFAULT_AF_THRESHOLD,
@@ -96,8 +102,17 @@ def analyze_vcf(
     family_column_map: dict[str, str] | None = None,
     qc: QualityFilters = DEFAULT_QUALITY,
     file_suffix: str | None = None,
+    trim: bool = False,
+    keep_indels: bool = False,
+    fasta_path: Path | None = None,
 ) -> AnalysisStats:
     """Scan a VCF, classify trios, and stream results to segmented TSV files."""
+    validate_allele_mode(
+        trim=trim,
+        keep_indels=keep_indels,
+        fasta=fasta_path,
+        multiallelic=multiallelic,
+    )
     if (vcf_path is None) == (vcf_shards is None):
         raise ValueError("Specify exactly one of vcf_path or vcf_shards")
     shard_mode = vcf_shards is not None
@@ -159,6 +174,7 @@ def analyze_vcf(
         if resume_last_pos >= 0:
             repeat_filter.advance_past(resume_last_pos)
 
+    genome = ReferenceFasta(fasta_path) if fasta_path is not None else None
     try:
         female_trios: list[tuple[int, int, int]] = []
         male_trios: list[tuple[int, int, int]] = []
@@ -218,6 +234,9 @@ def analyze_vcf(
                             person_header,
                             writer,
                             qc=qc,
+                            trim=trim,
+                            keep_indels=keep_indels,
+                            genome=genome,
                         )
                     else:
                         _process_biallelic_line(
@@ -238,6 +257,8 @@ def analyze_vcf(
                         memory_block=memory_block,
                     )
     finally:
+        if genome is not None:
+            genome.close()
         if repeat_filter is not None:
             repeat_filter.close()
         writer.close()
@@ -270,48 +291,91 @@ def _process_multiallelic_line(
     writer: ResultWriter,
     *,
     qc: QualityFilters,
+    trim: bool = False,
+    keep_indels: bool = False,
+    genome: ReferenceFasta | None = None,
 ) -> None:
     chrom, pos, keys, ref, alts = get_nfields(line, 5)
-    if len(ref) > 1:
+    normalize = trim or keep_indels
+    if not normalize and len(ref) > 1:
         return
 
     skeys = keys.split(";")
     salts = alts.split(",")
     writer.cumulative.variants_seen += 1
 
-    alleles_to_process: list[tuple[int, str, str]] = []
+    alleles_to_process: list[tuple[int, str, str, str, str]] = []
     for alt_index, key in enumerate(skeys, start=1):
         if alt_index > len(salts):
             break
         alt = salts[alt_index - 1]
-        if len(alt) > 1:
+        if normalize:
+            prepared = _normalized_allele(
+                chrom, pos, ref, alt, keep_indels=keep_indels, genome=genome
+            )
+            if prepared is None:
+                continue
+            out_pos, out_ref, out_alt, af_key = prepared
+        else:
+            if len(alt) > 1:
+                continue
+            out_pos, out_ref, out_alt, af_key = pos, ref, alt, key
+        if not is_rare(af_table, af_key, af_threshold):
             continue
-        if not is_rare(af_table, key, af_threshold):
-            continue
-        alleles_to_process.append((alt_index, key, alt))
+        alleles_to_process.append((alt_index, af_key, out_alt, out_pos, out_ref))
 
-    if not alleles_to_process:
-        return
+    if alleles_to_process:
+        sample_fields = line.rstrip().split("\t")[9:]
+        for alt_index, af_key, out_alt, out_pos, out_ref in alleles_to_process:
+            writer.cumulative.alleles_tested += 1
+            _process_allele(
+                chrom,
+                out_pos,
+                out_ref,
+                out_alt,
+                af_key,
+                alt_index,
+                sample_fields,
+                person_header,
+                female_trios,
+                male_trios,
+                all_trios,
+                writer,
+                clean_ad=True,
+                qc=qc,
+            )
+    if normalize:
+        writer.note_vcf_position(chrom, pos)
 
-    sample_fields = line.rstrip().split("\t")[9:]
-    for alt_index, key, alt in alleles_to_process:
-        writer.cumulative.alleles_tested += 1
-        _process_allele(
-            chrom,
-            pos,
-            ref,
-            alt,
-            key,
-            alt_index,
-            sample_fields,
-            person_header,
-            female_trios,
-            male_trios,
-            all_trios,
-            writer,
-            clean_ad=True,
-            qc=qc,
-        )
+
+def _normalized_allele(
+    chrom: str,
+    pos: str,
+    ref: str,
+    alt: str,
+    *,
+    keep_indels: bool,
+    genome: ReferenceFasta | None,
+) -> tuple[str, str, str, str] | None:
+    base_at = None
+    if keep_indels:
+        if genome is None:
+            raise ValueError("--keep-indels requires --fasta")
+
+        def base_at(position: int, _chrom: str = chrom, _genome: ReferenceFasta = genome) -> str | None:
+            return _genome.base(_chrom, position)
+
+    prepared = prepare_allele(
+        int(pos),
+        ref,
+        alt,
+        keep_indels=keep_indels,
+        base_at=base_at,
+    )
+    if prepared is None:
+        return None
+    new_pos, new_ref, new_alt = prepared
+    return str(new_pos), new_ref, new_alt, allele_key(chrom, new_pos, new_ref, new_alt)
 
 
 def _process_biallelic_line(
@@ -733,6 +797,9 @@ def save_run_params(
     family_map_path: Path | None = None,
     qc: QualityFilters = DEFAULT_QUALITY,
     file_suffix: str | None = None,
+    trim: bool = False,
+    keep_indels: bool = False,
+    fasta_path: Path | None = None,
 ) -> Path:
     """Write the parameters for this run into the chromosome output directory."""
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -756,6 +823,9 @@ def save_run_params(
         "family_map": str(family_map_path.resolve()) if family_map_path is not None else None,
         "quality_filters": qc.as_params(),
         "file_suffix": file_suffix,
+        "trim": trim,
+        "keep_indels": keep_indels,
+        "fasta": str(fasta_path.resolve()) if fasta_path is not None else None,
     }
     if vcf_path is not None:
         payload["vcf"] = str(vcf_path.resolve())

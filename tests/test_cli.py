@@ -144,6 +144,27 @@ def test_main_rejects_file_suffix_with_resume(capsys):
     assert "--file-suffix cannot be used with --resume" in capsys.readouterr().err
 
 
+def test_main_rejects_trim_with_no_multiallelic(capsys):
+    with pytest.raises(SystemExit) as exc:
+        main([*_ANALYZE_MIN, "--trim", "--no-multiallelic"])
+    assert exc.value.code == 1
+    assert "--no-multiallelic" in capsys.readouterr().err
+
+
+def test_main_rejects_keep_indels_without_fasta(capsys):
+    with pytest.raises(SystemExit) as exc:
+        main([*_ANALYZE_MIN, "--keep-indels"])
+    assert exc.value.code == 1
+    assert "--keep-indels requires --fasta" in capsys.readouterr().err
+
+
+def test_main_rejects_fasta_without_keep_indels(capsys):
+    with pytest.raises(SystemExit) as exc:
+        main([*_ANALYZE_MIN, "--fasta", "ref.fa"])
+    assert exc.value.code == 1
+    assert "--fasta requires --keep-indels" in capsys.readouterr().err
+
+
 def test_main_rejects_file_suffix_with_path_separator(capsys):
     with pytest.raises(SystemExit) as exc:
         main([*_ANALYZE_MIN, "--file-suffix", "a/b"])
