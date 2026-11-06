@@ -15,6 +15,13 @@ INDEL_STATS_NAME = "indels-stats.json"
 LENGTH_DIFF_STATS_NAME = "insertions-deletions-stats.json"
 
 _CHROM_DIR_NAME = re.compile(r"^chr(?:\d+|X|Y|M)$")
+_SHARD_VCF_NAME = re.compile(
+    r"^(?P<stem>.+)\.(?P<chrom>chr(?:\d+|X|Y|M))_(?P<start>\d+)_(?P<end>\d+)\.vcf(?:\.gz)?$"
+)
+_WHOLE_VCF_NAME = re.compile(
+    r"^(?P<stem>.+)\.(?P<chrom>chr(?:\d+|X|Y|M))\.vcf(?:\.gz)?$"
+)
+_SHARD_SUMMARY_NAME = re.compile(r"^summary_(\d+)_(\d+)\.json$")
 
 _COUNT_FIELDS = (
     "bi_line_count",
@@ -81,23 +88,71 @@ def discover_chromosome_vcfs(input_dir: Path, prefix: str, chrom: str) -> list[P
     return whole or shards
 
 
+def parse_vcf_filename(path: Path) -> tuple[str, str, tuple[int, int] | None]:
+    """Return ``(chrom, prefix, span)``. ``span`` is ``(start, end)`` for a shard."""
+    shard = _SHARD_VCF_NAME.fullmatch(path.name)
+    if shard is not None:
+        start = int(shard.group("start"))
+        end = int(shard.group("end"))
+        if start > end:
+            raise ValueError(f"Invalid shard coordinates in {path.name}: start {start} > end {end}")
+        return shard.group("chrom"), shard.group("stem"), (start, end)
+    whole = _WHOLE_VCF_NAME.fullmatch(path.name)
+    if whole is not None:
+        return whole.group("chrom"), whole.group("stem"), None
+    raise ValueError(
+        f"VCF name must be {{prefix}}.chrN.vcf.gz or "
+        f"{{prefix}}.chrN_{{start}}_{{end}}.vcf.gz, not {path.name}"
+    )
+
+
+def collect_vcf_file(path: Path) -> tuple[dict[str, object], tuple[int, int] | None]:
+    """Stream one VCF. Sample columns are not read."""
+    if not path.is_file():
+        raise FileNotFoundError(f"VCF not found: {path}")
+    chrom, prefix, span = parse_vcf_filename(path)
+    payload = _stats_payload(chrom, prefix, [path], [path])
+    if span is not None:
+        payload["start"] = span[0]
+        payload["end"] = span[1]
+    return payload, span
+
+
 def collect_vcf_stats(input_dir: Path, chrom: str, prefix: str) -> dict[str, object]:
     """Stream one chromosome and return allele counts. Sample columns are not read."""
     label = normalize_chrom_label(chrom)
     paths = discover_chromosome_vcfs(input_dir, prefix, label)
-    counts = {name: 0 for name in _COUNT_FIELDS}
+    return _stats_payload(label, prefix, paths, paths)
+
+
+def aggregate_chromosome_stats(input_dir: Path, chrom: str) -> dict[str, object]:
+    """Add ``summary_<start>_<end>.json`` files for one chromosome. Does not read VCFs."""
+    if not input_dir.is_dir():
+        raise FileNotFoundError(f"Stats directory not found: {input_dir}")
+    label = normalize_chrom_label(chrom)
+    chrom_dir = input_dir / label
+    if not chrom_dir.is_dir():
+        raise FileNotFoundError(f"No stats directory for {label}: {chrom_dir}")
+    shards = _shard_summaries(chrom_dir)
+    totals = {name: 0 for name in _COUNT_FIELDS}
     indel_lengths: dict[int, int] = {}
     length_diffs: dict[int, int] = {}
-    for path in paths:
-        _accumulate_vcf(path, label, counts, indel_lengths, length_diffs)
+    files: list[str] = []
+    for summary, indel_path, diff_path in shards:
+        for name in _COUNT_FIELDS:
+            totals[name] += int(summary.get(name, 0))
+        _add_distribution(indel_lengths, _read_distribution(indel_path))
+        _add_distribution(length_diffs, _read_distribution(diff_path))
+        recorded = summary.get("files")
+        if isinstance(recorded, list):
+            files.extend(str(name) for name in recorded)
     return {
         "kind": STATS_KIND,
         "version": STATS_VERSION,
         "sum": False,
         "chrom": label,
-        "prefix": prefix,
-        "files": [path.name for path in paths],
-        **counts,
+        "files": files,
+        **totals,
         "d_indel": _distribution(indel_lengths),
         "d_dl": _distribution(length_diffs),
     }
@@ -140,15 +195,24 @@ def sum_vcf_stats(input_dir: Path) -> dict[str, object]:
     }
 
 
-def write_chromosome_stats(output_dir: Path, payload: dict[str, object]) -> Path:
-    """Write ``output_dir/chrN/`` with the summary and the two indel distributions."""
+def write_chromosome_stats(
+    output_dir: Path,
+    payload: dict[str, object],
+    span: tuple[int, int] | None = None,
+) -> Path:
+    """Write ``output_dir/chrN/`` with the summary and the two indel distributions.
+
+    A shard span adds ``_<start>_<end>`` to each filename. The unsuffixed names are the
+    whole-chromosome totals.
+    """
     chrom = str(payload["chrom"])
     destination = output_dir / chrom
     destination.mkdir(parents=True, exist_ok=True)
+    suffix = "" if span is None else f"_{span[0]}_{span[1]}"
     summary = {key: value for key, value in payload.items() if key not in {"d_indel", "d_dl"}}
-    _write_json(destination / SUMMARY_NAME, summary)
-    _write_json(destination / INDEL_STATS_NAME, payload["d_indel"])
-    _write_json(destination / LENGTH_DIFF_STATS_NAME, payload["d_dl"])
+    _write_json(destination / f"summary{suffix}.json", summary)
+    _write_json(destination / f"indels-stats{suffix}.json", payload["d_indel"])
+    _write_json(destination / f"insertions-deletions-stats{suffix}.json", payload["d_dl"])
     return destination
 
 
@@ -315,18 +379,76 @@ def _chrom_sort_key(name: str) -> tuple[int, int | str]:
     return (1, rest)
 
 
+def _stats_payload(
+    chrom: str,
+    prefix: str,
+    record_paths: list[Path],
+    vcf_paths: list[Path],
+) -> dict[str, object]:
+    counts = {name: 0 for name in _COUNT_FIELDS}
+    indel_lengths: dict[int, int] = {}
+    length_diffs: dict[int, int] = {}
+    for path in vcf_paths:
+        _accumulate_vcf(path, chrom, counts, indel_lengths, length_diffs)
+    return {
+        "kind": STATS_KIND,
+        "version": STATS_VERSION,
+        "sum": False,
+        "chrom": chrom,
+        "prefix": prefix,
+        "files": [path.name for path in record_paths],
+        **counts,
+        "d_indel": _distribution(indel_lengths),
+        "d_dl": _distribution(length_diffs),
+    }
+
+
+def _shard_summaries(chrom_dir: Path) -> list[tuple[dict[str, object], Path, Path]]:
+    found: list[tuple[int, int, Path]] = []
+    for path in chrom_dir.iterdir():
+        if not path.is_file():
+            continue
+        match = _SHARD_SUMMARY_NAME.fullmatch(path.name)
+        if match is None:
+            continue
+        found.append((int(match.group(1)), int(match.group(2)), path))
+    found.sort()
+    if not found:
+        raise FileNotFoundError(f"No shard summary_<start>_<end>.json files in {chrom_dir}")
+    for prev, current in zip(found, found[1:]):
+        if current[0] <= prev[1]:
+            raise ValueError(
+                f"Overlapping shard summaries in {chrom_dir}: "
+                f"{prev[0]}_{prev[1]} and {current[0]}_{current[1]}"
+            )
+    rows: list[tuple[dict[str, object], Path, Path]] = []
+    for start, end, summary_path in found:
+        summary = _read_summary_file(summary_path, expected_chrom=chrom_dir.name)
+        indel_path = chrom_dir / f"indels-stats_{start}_{end}.json"
+        diff_path = chrom_dir / f"insertions-deletions-stats_{start}_{end}.json"
+        rows.append((summary, indel_path, diff_path))
+    return rows
+
+
 def _read_summary(chrom_dir: Path) -> dict[str, object]:
     path = chrom_dir / SUMMARY_NAME
     if not path.is_file():
-        raise FileNotFoundError(f"Missing {SUMMARY_NAME} in {chrom_dir}")
+        raise FileNotFoundError(
+            f"Missing {SUMMARY_NAME} in {chrom_dir}. "
+            "Aggregate shard files with --chr before --sum."
+        )
+    return _read_summary_file(path, expected_chrom=chrom_dir.name)
+
+
+def _read_summary_file(path: Path, *, expected_chrom: str) -> dict[str, object]:
     payload = json.loads(path.read_text(encoding="utf-8"))
     if not isinstance(payload, dict) or payload.get("kind") != STATS_KIND:
         raise ValueError(f"{path} is not a vcf-stats summary")
     if payload.get("version") != STATS_VERSION:
         raise ValueError(f"Unsupported vcf-stats version in {path}: {payload.get('version')}")
-    if payload.get("chrom") != chrom_dir.name:
+    if payload.get("chrom") != expected_chrom:
         raise ValueError(
-            f"{path} records chromosome {payload.get('chrom')!r}, not {chrom_dir.name}"
+            f"{path} records chromosome {payload.get('chrom')!r}, not {expected_chrom}"
         )
     return payload
 

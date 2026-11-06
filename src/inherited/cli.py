@@ -24,6 +24,8 @@ from inherited.families import load_family_column_map
 from inherited.genotype import QualityFilters
 from inherited.shards import discover_vcf_shards
 from inherited.vcf_stats import (
+    aggregate_chromosome_stats,
+    collect_vcf_file,
     collect_vcf_stats,
     sum_vcf_stats,
     write_chromosome_stats,
@@ -277,12 +279,16 @@ def build_parser() -> argparse.ArgumentParser:
         "vcf-stats",
         help="Count SNV, MNV, insertion, and deletion alleles in one chromosome of pVCFs",
     )
-    stats_cmd.add_argument(
+    stats_input = stats_cmd.add_mutually_exclusive_group(required=True)
+    stats_input.add_argument(
         "--input-dir",
-        required=True,
         type=Path,
-        help="Directory of {prefix}.chrN.vcf.gz files, or of chrN shard directories. "
-        "With --sum, the parent of the per-chromosome stats directories.",
+        help="VCF directory, or the parent of chrN stats directories when aggregating.",
+    )
+    stats_input.add_argument(
+        "--vcf",
+        type=Path,
+        help="One VCF: {prefix}.chrN.vcf.gz or {prefix}.chrN_{start}_{end}.vcf.gz.",
     )
     stats_cmd.add_argument(
         "--output-dir",
@@ -293,17 +299,18 @@ def build_parser() -> argparse.ArgumentParser:
     stats_cmd.add_argument(
         "--chr",
         default=None,
-        help="Chromosome to scan (1, X, Y, or chr1). Required unless --sum.",
+        help="Chromosome (1, X, Y, or chr1). With --prefix, scan its VCFs. "
+        "Without --prefix, add that chromosome's shard JSON files.",
     )
     stats_cmd.add_argument(
         "--prefix",
         default=None,
-        help="Filename prefix before .chrN. Required unless --sum.",
+        help="Filename prefix before .chrN. With --input-dir and --chr, scan VCFs.",
     )
     stats_cmd.add_argument(
         "--sum",
         action="store_true",
-        help="Add chrN stats directories under --input-dir. Does not read VCFs.",
+        help="Add unsuffixed chrN/summary.json files under --input-dir. Does not read VCFs.",
     )
 
     return parser
@@ -489,15 +496,27 @@ def _run_filter(args: argparse.Namespace) -> None:
 
 def _run_vcf_stats(args: argparse.Namespace) -> None:
     try:
-        if args.sum:
+        if args.vcf is not None:
+            if args.sum or args.chr or args.prefix:
+                raise ValueError("--vcf does not take --sum, --chr, or --prefix")
+            payload, span = collect_vcf_file(args.vcf)
+            destination = write_chromosome_stats(args.output_dir, payload, span)
+        elif args.sum:
+            if args.input_dir is None:
+                raise ValueError("--sum requires --input-dir")
             if args.chr or args.prefix:
                 raise ValueError("--sum does not take --chr or --prefix")
             payload = sum_vcf_stats(args.input_dir)
             destination = write_sum_stats(args.output_dir, payload)
-        else:
-            if not args.chr or not args.prefix:
-                raise ValueError("--chr and --prefix are required unless --sum is set")
+        elif args.prefix:
+            if args.input_dir is None or not args.chr:
+                raise ValueError("--prefix requires --input-dir and --chr")
             payload = collect_vcf_stats(args.input_dir, args.chr, args.prefix)
+            destination = write_chromosome_stats(args.output_dir, payload)
+        else:
+            if args.input_dir is None or not args.chr:
+                raise ValueError("--chr and --input-dir are required to aggregate shard JSON files")
+            payload = aggregate_chromosome_stats(args.input_dir, args.chr)
             destination = write_chromosome_stats(args.output_dir, payload)
     except (FileNotFoundError, ValueError, OSError) as exc:
         print(f"error: {exc}", file=sys.stderr)

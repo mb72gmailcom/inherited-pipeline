@@ -232,9 +232,19 @@ Requires an existing incomplete `checkpoint.json`. With `--vcf`, also requires `
 
 ## VCF allele statistics
 
-`vcf-stats` reads one chromosome of cohort pVCFs and counts alleles. It uses chromosome, position, REF, and ALT only. Sample columns are not read. Pass `--chr` and `--prefix`. `--prefix` is the filename stem before `.chrN`.
+`vcf-stats` counts alleles in cohort pVCFs. It uses chromosome, position, REF, and ALT only. Sample columns are not read. `--output-dir` is the parent directory; the chromosome is added under it.
 
-A whole-chromosome file is `{input-dir}/{prefix}.chr1.vcf.gz`. Position shards are `{input-dir}/chr1/{prefix}.chr1_{start}_{end}.vcf.gz`, read in start order. One chromosome is one run.
+One shard, run in parallel with the other shards:
+
+```bash
+python run.py vcf-stats \
+  --vcf /data/pvcf/chr1/SPARK.WGS.2026_08.gatk.chr1_10000001_12500000.vcf.gz \
+  --output-dir stats
+```
+
+The chromosome and coordinates come from the filename. This writes `stats/chr1/summary_10000001_12500000.json`, `stats/chr1/indels-stats_10000001_12500000.json`, and `stats/chr1/insertions-deletions-stats_10000001_12500000.json`.
+
+A whole chromosome in one process uses `--input-dir`, `--chr`, and `--prefix`. A whole-chromosome filename `{prefix}.chr1.vcf.gz` passed to `--vcf` writes the same unsuffixed files:
 
 ```bash
 python run.py vcf-stats \
@@ -244,13 +254,17 @@ python run.py vcf-stats \
   --output-dir stats
 ```
 
-`--output-dir` is the parent. The chromosome from `--chr` is added, so this writes `stats/chr1/summary.json`, `stats/chr1/indels-stats.json`, and `stats/chr1/insertions-deletions-stats.json`.
-
 `summary.json` holds the line and allele counts. `indels-stats.json` is `d_indel`, keyed by the longer allele length. `insertions-deletions-stats.json` is `d_dl`, keyed by `len(ref) - len(alt)`: a positive key is a deletion and a negative key is an insertion.
 
 Each ALT is trimmed before it is classified. `*`, `<...>`, and breakends are counted in `symbolic_count` and are not trimmed. `bi_*` counts are biallelic lines (one ALT). `multi_*` counts are the alleles on lines with two or more ALT tokens. `*_raw` is the SNV or MNV class before trimming.
 
-Add the `chr*` directories without reading the VCFs again. The totals are written directly into `--output-dir`:
+After the shards of one chromosome finish, add only those `summary_<start>_<end>.json` files. This writes the unsuffixed chromosome files and does not read them back in:
+
+```bash
+python run.py vcf-stats --chr 1 --input-dir stats --output-dir stats
+```
+
+Add those chromosome files across `chr*` directories. Shard files are ignored:
 
 ```bash
 python run.py vcf-stats --sum --input-dir stats --output-dir stats/overall

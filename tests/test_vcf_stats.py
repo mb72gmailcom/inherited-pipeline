@@ -6,6 +6,8 @@ import pytest
 
 from inherited.cli import main
 from inherited.vcf_stats import (
+    aggregate_chromosome_stats,
+    collect_vcf_file,
     collect_vcf_stats,
     sum_vcf_stats,
     trim_alleles,
@@ -127,6 +129,64 @@ def test_sum_adds_chromosome_json_files(tmp_path: Path) -> None:
     assert total["bi_snv_count"] == 2
     assert total["bi_snv_count_raw"] == 1
     assert total["bi_mnv_count_raw"] == 1
+
+
+def test_one_shard_vcf_writes_coordinate_files(tmp_path: Path) -> None:
+    vcf = tmp_path / "vcfs" / "cohort.chr1_100_200.vcf"
+    _write_vcf(vcf, _site("chr1", 150, "AA", "CA"))
+    payload, span = collect_vcf_file(vcf)
+    stats_dir = tmp_path / "stats"
+    write_chromosome_stats(stats_dir, payload, span)
+
+    chrom_dir = stats_dir / "chr1"
+    summary = json.loads((chrom_dir / "summary_100_200.json").read_text(encoding="utf-8"))
+    assert span == (100, 200)
+    assert summary["bi_snv_count"] == 1
+    assert summary["bi_mnv_count_raw"] == 1
+    assert not (chrom_dir / "summary.json").exists()
+
+
+def test_chromosome_aggregate_ignores_the_unsuffixed_summary(tmp_path: Path) -> None:
+    stats_dir = tmp_path / "stats"
+    for start, end, alt in ((1, 10, "C"), (11, 20, "G")):
+        vcf = tmp_path / "vcfs" / f"cohort.chr1_{start}_{end}.vcf"
+        _write_vcf(vcf, _site("chr1", start, "A", alt))
+        payload, span = collect_vcf_file(vcf)
+        write_chromosome_stats(stats_dir, payload, span)
+    write_chromosome_stats(
+        stats_dir,
+        {
+            "kind": "vcf-stats",
+            "version": 1,
+            "sum": False,
+            "chrom": "chr1",
+            "files": ["already.json"],
+            "bi_line_count": 100,
+            "bi_snv_count": 100,
+            "d_indel": {},
+            "d_dl": {},
+        },
+    )
+
+    combined = aggregate_chromosome_stats(stats_dir, "1")
+    write_chromosome_stats(stats_dir, combined)
+
+    assert combined["bi_snv_count"] == 2
+    assert combined["files"] == ["cohort.chr1_1_10.vcf", "cohort.chr1_11_20.vcf"]
+    summary = json.loads((stats_dir / "chr1" / "summary.json").read_text(encoding="utf-8"))
+    assert summary["bi_snv_count"] == 2
+    total = sum_vcf_stats(stats_dir)
+    assert total["bi_snv_count"] == 2
+
+
+def test_cli_vcf_shard(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    vcf = tmp_path / "cohort.chr2_5_9.vcf.gz"
+    _write_gzip_vcf(vcf, _site("chr2", 6, "A", "T"))
+    output_dir = tmp_path / "stats"
+    main(["vcf-stats", "--vcf", str(vcf), "--output-dir", str(output_dir)])
+    summary = output_dir / "chr2" / "summary_5_9.json"
+    assert json.loads(summary.read_text(encoding="utf-8"))["bi_snv_count"] == 1
+    assert str(output_dir / "chr2") in capsys.readouterr().out
 
 
 def test_cli_writes_the_chromosome_directory(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
