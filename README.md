@@ -127,7 +127,7 @@ Repeat files are 0-based BED-style ``chrom start end`` rows with half-open inter
 
 ## Quality filters
 
-Diploid QC (autosomes, female chrX, male PAR): `DP≥10`, `GQ≥20`. Allele balance applies only when the genotype carries the queried alt: heterozygotes (`ac==1`) require `0.25 ≤ AB ≤ 0.75`; homozygous-alt (`ac≥2`) require `AB≥0.9`. Homozygous-reference calls skip AB unless `--ab-hom00-threshold` is set; then diploid `0/0` requires `ab00 ≥ value` where `ab00 = AD[REF] / sum(AD)` (typical `0.9`).
+Diploid QC (autosomes, female chrX, male PAR): `DP≥10`, `GQ≥20`. Allele balance applies only when the genotype carries the queried alt: heterozygotes (`ac==1`) require `0.25 ≤ AB ≤ 0.75`; homozygous-alt (`ac≥2`) require `AB≥0.9`. Homozygous-reference calls skip AB unless `--ab-hom00-threshold` is set; then diploid `0/0` requires `ab00 ≥ value` where `ab00 = AD[REF] / sum(AD)` (typical `0.9`). Genotypes that carry a different alt but not the queried one (e.g. `0/1` or `1/3` when analysing alt 2) skip AB unless `--ab-noncarrier-max` is set; then they require `AD[alt] / sum(AD) ≤ value` (diploid and haploid; reference-only calls are not affected).
 
 Haploid QC (male chrX nonPAR, chrY): `DP≥5`, `GQ≥20`, and `AB≥0.85` when the genotype carries the alt.
 

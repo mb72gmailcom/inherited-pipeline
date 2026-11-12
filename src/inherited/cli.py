@@ -181,6 +181,19 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     analyze.add_argument(
+        "--ab-noncarrier-max",
+        type=float,
+        default=None,
+        help=(
+            "Optional maximum share of reads for the queried alt in genotypes that "
+            "carry a different alt but not the queried one (e.g. 0/1 or 1/3 when "
+            "analysing alt 2; diploid and haploid). When set, such genotypes must "
+            "satisfy AD[alt] / sum(AD) <= value (inclusive). Reference-only calls "
+            "(0/0, haploid 0) are not affected; see --ab-hom00-threshold. "
+            "Omitted (default): no AB check on these genotypes"
+        ),
+    )
+    analyze.add_argument(
         "--ab-haploid-threshold",
         type=float,
         default=DEFAULT_HAPLO_AB,
@@ -446,6 +459,7 @@ def main(argv: list[str] | None = None) -> None:
                 ab=args.ab_threshold,
                 ab_hom=args.ab_hom_threshold,
                 ab_hom00=args.ab_hom00_threshold,
+                ab_noncarrier_max=args.ab_noncarrier_max,
                 haplo_dp=args.dp_haploid_threshold,
                 haplo_ab=args.ab_haploid_threshold,
             )

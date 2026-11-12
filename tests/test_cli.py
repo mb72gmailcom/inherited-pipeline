@@ -36,6 +36,7 @@ def test_analyze_parser_qc_defaults():
     assert args.ab_threshold == DEFAULT_AB
     assert args.ab_hom_threshold == DEFAULT_AB_HOM
     assert args.ab_hom00_threshold is None
+    assert args.ab_noncarrier_max is None
     assert args.ab_haploid_threshold == DEFAULT_HAPLO_AB
     assert args.vcf_dir is None
     assert args.vcf_pattern is None
@@ -59,6 +60,8 @@ def test_analyze_parser_qc_overrides():
             "0.95",
             "--ab-hom00-threshold",
             "0.9",
+            "--ab-noncarrier-max",
+            "0.1",
             "--ab-haploid-threshold",
             "0.8",
         ]
@@ -69,6 +72,7 @@ def test_analyze_parser_qc_overrides():
     assert args.ab_threshold == 0.3
     assert args.ab_hom_threshold == 0.95
     assert args.ab_hom00_threshold == 0.9
+    assert args.ab_noncarrier_max == 0.1
     assert args.ab_haploid_threshold == 0.8
 
 

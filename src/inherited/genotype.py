@@ -17,6 +17,8 @@ class QualityFilters:
     """Per-run genotype QC thresholds. Defaults match ``constants.py``.
 
     ``ab_hom00`` is optional; ``None`` means diploid ``0/0`` skips AB.
+    ``ab_noncarrier_max`` is optional; ``None`` means genotypes that carry no copy
+    of the queried alt (other than reference-only calls) skip AB.
     """
 
     gq: int = DEFAULT_GQ
@@ -24,6 +26,7 @@ class QualityFilters:
     ab: float = DEFAULT_AB
     ab_hom: float = DEFAULT_AB_HOM
     ab_hom00: float | None = None
+    ab_noncarrier_max: float | None = None
     haplo_dp: int = DEFAULT_HAPLO_DP
     haplo_ab: float = DEFAULT_HAPLO_AB
 
@@ -133,6 +136,7 @@ def is_good(
     ab_min: float = DEFAULT_AB,
     ab_hom_min: float = DEFAULT_AB_HOM,
     ab_hom00_min: float | None = None,
+    ab_noncarrier_max: float | None = None,
     gq_min: int = DEFAULT_GQ,
     alleles: list[str] | None = None,
     ac: int | None = None,
@@ -160,13 +164,13 @@ def is_good(
     if ac is None:
         ac = sum(allele.isdigit() and int(allele) == alt_index for allele in parsed)
     if ac <= 0:
-        if (
-            ab_hom00_min is not None
-            and not haploid
-            and parsed
-            and all(allele == "0" for allele in parsed)
-        ):
+        ref_only = bool(parsed) and all(allele == "0" for allele in parsed)
+        if ab_hom00_min is not None and not haploid and ref_only:
             return ads[0] / total >= ab_hom00_min
+        if ab_noncarrier_max is not None and not ref_only:
+            # A call such as 0/1 queried for alt 2 carries a different alt; reject
+            # it when the queried alt still has a large share of the reads.
+            return ads[alt_index] / total <= ab_noncarrier_max
         return True
 
     ab = ads[alt_index] / total
@@ -226,6 +230,10 @@ def get_good_site(
     When ``qc.ab_hom00`` is set, diploid ``0/0`` also requires
     ``AD[0] / sum(AD) >= ab_hom00``. Haploid ref and other ``ac==0`` genotypes
     skip that check.
+    When ``qc.ab_noncarrier_max`` is set, a genotype with no copy of the queried
+    alt that is not reference-only (e.g. ``0/1`` or ``1/3`` queried for alt 2,
+    diploid or haploid) also requires ``AD[alt] / sum(AD) <= ab_noncarrier_max``.
+    Unset, such genotypes skip AB (the historical behavior).
 
     When ``skip_qc_if_no_alt`` is True and the genotype carries no copies of the
     queried alt, return ``(0, gt, gq)`` without DP/AD/GQ checks. Used for child
@@ -258,6 +266,7 @@ def get_good_site(
         ab_min=ab_min,
         ab_hom_min=qc.ab_hom,
         ab_hom00_min=qc.ab_hom00,
+        ab_noncarrier_max=qc.ab_noncarrier_max,
         gq_min=qc.gq,
         alleles=alleles,
         ac=ac,

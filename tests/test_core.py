@@ -289,7 +289,8 @@ def test_is_good_diploid_hom_alt_ab_floor():
 
 
 def test_is_good_multiallelic_cleans_missing_ad_as_zero():
-    assert not is_good("0/1", "30", "10,4,.,6", "0,0,0,0", "30", 2, clean_missing_ad_as_zero=True)
+    # 0/1 carries no copy of alt 2: a good-quality non-carrier (DP/GQ only).
+    assert is_good("0/1", "30", "10,4,.,6", "0,0,0,0", "30", 2, clean_missing_ad_as_zero=True)
     assert not is_good("0/1", "30", "10,4,.,6", "0,0,0,0", "30", 1, clean_missing_ad_as_zero=True)
     assert is_good("0/3", "30", "10,4,.,6", "0,0,0,0", "30", 3, clean_missing_ad_as_zero=True)
 
@@ -343,7 +344,8 @@ def test_get_good_site_respects_custom_qc():
 
 def test_get_good_site_multiallelic_clean_ad():
     sample = "0/3:30:10,4,.,6:0,0,0,0:30:0,30,30:."
-    assert get_good_site(sample, 2, clean_ad=True) == (-1, ".", "0")
+    # 0/3 carries no copy of alt 2: a good-quality non-carrier (DP/GQ only).
+    assert get_good_site(sample, 2, clean_ad=True) == (0, "0/3", "30")
     assert get_good_site(sample, 3, clean_ad=True) == (1, "0/3", "30")
     assert get_good_site(sample, 3, clean_ad=False) == (-1, ".", "0")
 
@@ -490,3 +492,48 @@ def test_x_region_and_buckets():
     assert male_x_bucket(15000) == "males_par1"
     assert male_x_bucket(5_000_000) == "males_nonPar"
     assert male_x_bucket(155800000) == "males_par2"
+
+
+def test_other_alt_noncarrier_still_needs_dp_and_gq():
+    assert get_good_site("0/1:5:3,2,0:0,0,0,0:30:0,30,30:.", 2) == (-1, ".", "0")
+    assert get_good_site("0/1:30:10,8,0:0,0,0,0:10:0,30,30:.", 2) == (-1, ".", "0")
+
+
+def test_ab_noncarrier_max_unset_keeps_historical_behavior():
+    leaky = "0/1:30:2,2,26:0,0,0,0:30:0,30,30:."
+    assert get_good_site(leaky, 2) == (0, "0/1", "30")
+    assert get_good_site(leaky, 2, qc=QualityFilters(ab_hom00=0.9)) == (0, "0/1", "30")
+
+
+def test_ab_noncarrier_max_rejects_reads_for_queried_alt():
+    qc = QualityFilters(ab_noncarrier_max=0.1)
+    assert get_good_site("0/1:30:2,2,26:0,0,0,0:30:0,30,30:.", 2, qc=qc) == (-1, ".", "0")
+    assert get_good_site("0/1:30:10,8,0:0,0,0,0:30:0,30,30:.", 2, qc=qc) == (0, "0/1", "30")
+    # Boundary is inclusive: 2 / 20 == 0.1.
+    assert get_good_site("0/1:30:10,8,2:0,0,0,0:30:0,30,30:.", 2, qc=qc) == (0, "0/1", "30")
+    # Missing AD for the queried alt is cleaned to zero on the multiallelic path.
+    assert get_good_site("0/3:30:10,4,.,6:0,0,0,0:30:0,30,30:.", 2, clean_ad=True, qc=qc) == (
+        0,
+        "0/3",
+        "30",
+    )
+
+
+def test_ab_noncarrier_max_applies_to_haploid():
+    qc = QualityFilters(ab_noncarrier_max=0.1)
+    assert get_good_site("2/2:10:1,8,1:0,0,0,0:30:0,30,30:.", 1, haploid=True, qc=qc) == (
+        -1,
+        ".",
+        "0",
+    )
+    assert get_good_site("2/2:10:1,0,9:0,0,0,0:30:0,30,30:.", 1, haploid=True, qc=qc) == (
+        0,
+        "2/2",
+        "30",
+    )
+
+
+def test_ab_noncarrier_max_ignores_reference_only_calls():
+    qc = QualityFilters(ab_noncarrier_max=0.1)
+    assert get_good_site("0/0:30:24,6:0,0,0,0:30:0,30,30:.", 1, qc=qc) == (0, "0/0", "30")
+    assert get_good_site("0:10:8,2:0,0,0,0:30:0,30,30:.", 1, haploid=True, qc=qc) == (0, "0", "30")
