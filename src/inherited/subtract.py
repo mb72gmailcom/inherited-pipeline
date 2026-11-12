@@ -6,52 +6,85 @@ import re
 from pathlib import Path
 
 from inherited.filter import PREFIXES
+from inherited.params import write_params
 
 _CHROM_DIR = re.compile(r"^chr(\d+|X|Y)$")
 _VCF_NAME = re.compile(r"^variants_\d+_\d+\.vcf$")
 TSV_HEADER = "#CHROM\tPOS\tID\tREF\tALT\tPATIENTS\n"
 
 
-def subtract_variants(input_dir1: Path, input_dir2: Path, output_dir: Path) -> None:
+def subtract_variants(
+    input_dir1: Path, input_dir2: Path, output_dir: Path, *, sites: bool = True
+) -> None:
     """Subtract paired ``variants_${start}_${end}.vcf`` files.
 
     A row from the first directory is written when its ``CHROM``, ``POS``,
     ``REF``, and ``ALT`` are absent from the same filename in the second
     directory. Files that exist only in the first directory are copied.
-    The same variants are written as short-format TSVs under
-    ``{output_dir}-sites``, with ``PATIENTS`` copied from ``{input_dir1}-sites``.
+    When ``sites`` is true, the same variants are written as short-format TSVs
+    under ``{output_dir}-sites``, with ``PATIENTS`` copied from
+    ``{input_dir1}-sites``, plus a ``patients.txt``. When ``sites`` is false,
+    only the VCF tree is written and no sites directory is read or created.
+    Parameters are recorded in ``{output_dir}/params.json``.
     """
     if not input_dir1.is_dir():
         raise ValueError(f"input directory not found: {input_dir1}")
     if not input_dir2.is_dir():
         raise ValueError(f"input directory not found: {input_dir2}")
     sites_dir1 = input_dir1.with_name(input_dir1.name + "-sites")
-    if not sites_dir1.is_dir():
+    if sites and not sites_dir1.is_dir():
         raise ValueError(f"sites directory not found: {sites_dir1}")
     sites_out = output_dir.with_name(output_dir.name + "-sites")
 
+    vcf_files = [
+        (chrom_dir.name, vcf_path)
+        for chrom_dir in _chrom_dirs(input_dir1)
+        for vcf_path in _variant_files(chrom_dir)
+    ]
+    if not vcf_files:
+        raise ValueError(
+            f"no variants_<start>_<end>.vcf files found under {input_dir1}/chr*"
+        )
+
     patients: set[str] = set()
-    for chrom_dir in _chrom_dirs(input_dir1):
-        for vcf_path in _variant_files(chrom_dir):
-            paired = input_dir2 / chrom_dir.name / vcf_path.name
-            blocked = _variant_keys(paired) if paired.is_file() else set()
-            sites_path = _sites_file(sites_dir1, chrom_dir.name, vcf_path.name)
-            site_patients = _read_site_patients(sites_path)
-            destination = output_dir / chrom_dir.name / vcf_path.name
-            tsv_destination = sites_out / chrom_dir.name / sites_path.name
-            destination.parent.mkdir(parents=True, exist_ok=True)
-            tsv_destination.parent.mkdir(parents=True, exist_ok=True)
-            patients.update(
-                _write_difference(
-                    vcf_path,
-                    destination,
-                    tsv_destination,
-                    blocked,
-                    site_patients,
-                    sites_path,
-                )
+    for chrom, vcf_path in vcf_files:
+        paired = input_dir2 / chrom / vcf_path.name
+        blocked = _variant_keys(paired) if paired.is_file() else set()
+        destination = output_dir / chrom / vcf_path.name
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        if not sites:
+            _write_vcf_difference(vcf_path, destination, blocked)
+            continue
+        sites_path = _sites_file(sites_dir1, chrom, vcf_path.name)
+        site_patients = _read_site_patients(sites_path)
+        tsv_destination = sites_out / chrom / sites_path.name
+        tsv_destination.parent.mkdir(parents=True, exist_ok=True)
+        patients.update(
+            _write_difference(
+                vcf_path,
+                destination,
+                tsv_destination,
+                blocked,
+                site_patients,
+                sites_path,
             )
-    _write_patient_list(sites_out / "patients.txt", patients)
+        )
+    if sites:
+        _write_patient_list(sites_out / "patients.txt", patients)
+    _write_params(input_dir1, input_dir2, output_dir, sites=sites)
+
+
+def _write_params(
+    input_dir1: Path, input_dir2: Path, output_dir: Path, *, sites: bool
+) -> Path:
+    payload = {
+        "command": "subtract",
+        "input_dir1": str(input_dir1.resolve()),
+        "input_dir2": str(input_dir2.resolve()),
+        "output_dir": str(output_dir.resolve()),
+        "sites": sites,
+    }
+    return write_params(output_dir / "params.json", payload)
 
 
 def _chrom_dirs(input_dir: Path) -> list[Path]:
@@ -157,6 +190,15 @@ def _write_difference(
             tsv.write(f"{line}\t{patients}\n")
             found.update(patient for patient in patients.split(";") if patient)
     return found
+
+
+def _write_vcf_difference(
+    source: Path, destination: Path, blocked: set[tuple[str, str, str, str]]
+) -> None:
+    with destination.open("w", encoding="utf-8") as vcf:
+        for key, line in _iter_vcf_rows(source):
+            if key not in blocked:
+                vcf.write(f"{line}\n")
 
 
 def _write_patient_list(path: Path, patients: set[str]) -> None:

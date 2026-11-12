@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
-import json
 import re
 from collections import Counter
 from pathlib import Path
+
+from inherited.params import write_params
 
 PREFIXES = ("inherited", "denovo", "mendelian_bad")
 
@@ -225,17 +226,15 @@ def _write_params(
     variant_cap: int | None,
     patient_cap: int | None,
 ) -> Path:
-    params_path = output_dir / "params.json"
     payload = {
+        "command": "filter",
         "input_dir": str(input_dir.resolve()),
         "output_dir": str(output_dir.resolve()),
         "patient_cap": _cap_param(patient_cap),
         "prefix": prefix,
         "variant_cap": _cap_param(variant_cap),
     }
-    with params_path.open("w", encoding="utf-8") as handle:
-        json.dump(payload, handle, indent=2, sort_keys=True)
-    return params_path
+    return write_params(output_dir / "params.json", payload)
 
 
 def _cap_param(value: int | None) -> int | str:

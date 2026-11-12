@@ -8,6 +8,7 @@ from inherited.alleles import validate_allele_mode
 from inherited.analyze import analyze_vcf, save_run_params
 from inherited.checkpoint import validate_file_suffix
 from inherited.filter import PREFIXES, filter_results
+from inherited.params import resolved, write_params
 from inherited.subtract import subtract_variants
 from inherited.constants import (
     DEFAULT_AB,
@@ -302,6 +303,15 @@ def build_parser() -> argparse.ArgumentParser:
         type=Path,
         help="Directory for variants_${start}_${end}.vcf files",
     )
+    subtract_cmd.add_argument(
+        "--no-sites",
+        dest="sites",
+        action="store_false",
+        help=(
+            "Subtract VCFs only: do not read {input_dir1}-sites and do not write "
+            "{output_dir}-sites TSVs or patients.txt"
+        ),
+    )
 
     stats_cmd = subparsers.add_parser(
         "vcf-stats",
@@ -543,39 +553,67 @@ def _run_vcf_stats(args: argparse.Namespace) -> None:
         if args.vcf is not None:
             if args.sum or args.chr or args.prefix:
                 raise ValueError("--vcf does not take --sum, --chr, or --prefix")
+            mode = "vcf"
             payload, span = collect_vcf_file(args.vcf)
             destination = write_chromosome_stats(args.output_dir, payload, span)
+            params_name = "params.json" if span is None else f"params_{span[0]}_{span[1]}.json"
         elif args.sum:
             if args.input_dir is None:
                 raise ValueError("--sum requires --input-dir")
             if args.chr or args.prefix:
                 raise ValueError("--sum does not take --chr or --prefix")
+            mode = "sum"
             payload = sum_vcf_stats(args.input_dir)
             destination = write_sum_stats(args.output_dir, payload)
+            params_name = "params.json"
         elif args.prefix:
             if args.input_dir is None or not args.chr:
                 raise ValueError("--prefix requires --input-dir and --chr")
+            mode = "prefix"
             payload = collect_vcf_stats(args.input_dir, args.chr, args.prefix)
             destination = write_chromosome_stats(args.output_dir, payload)
+            params_name = "params.json"
         else:
             if args.input_dir is None or not args.chr:
                 raise ValueError("--chr and --input-dir are required to aggregate shard JSON files")
+            mode = "aggregate"
             payload = aggregate_chromosome_stats(args.input_dir, args.chr)
             destination = write_chromosome_stats(args.output_dir, payload)
+            params_name = "params.json"
+        params_path = write_params(
+            destination / params_name,
+            {
+                "command": "vcf-stats",
+                "mode": mode,
+                "input_dir": resolved(args.input_dir),
+                "vcf": resolved(args.vcf),
+                "chr": args.chr,
+                "prefix": args.prefix,
+                "sum": args.sum,
+                "output_dir": str(args.output_dir.resolve()),
+            },
+        )
     except (FileNotFoundError, ValueError, OSError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         raise SystemExit(1) from exc
     print(f"Wrote {destination}")
+    print(f"Wrote parameters to {params_path}")
 
 
 def _run_subtract(args: argparse.Namespace) -> None:
     try:
-        subtract_variants(args.input_dir1, args.input_dir2, args.output_dir)
+        subtract_variants(
+            args.input_dir1, args.input_dir2, args.output_dir, sites=args.sites
+        )
     except ValueError as exc:
         print(f"error: {exc}", file=sys.stderr)
         raise SystemExit(1) from exc
-    sites_dir = args.output_dir.with_name(args.output_dir.name + "-sites")
-    print(f"Wrote subtracted VCFs to {args.output_dir} and TSVs to {sites_dir}")
+    if args.sites:
+        sites_dir = args.output_dir.with_name(args.output_dir.name + "-sites")
+        print(f"Wrote subtracted VCFs to {args.output_dir} and TSVs to {sites_dir}")
+    else:
+        print(f"Wrote subtracted VCFs to {args.output_dir}")
+    print(f"Wrote parameters to {args.output_dir / 'params.json'}")
 
 
 if __name__ == "__main__":

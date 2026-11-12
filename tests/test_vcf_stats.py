@@ -187,6 +187,12 @@ def test_cli_vcf_shard(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> No
     summary = output_dir / "chr2" / "summary_5_9.json"
     assert json.loads(summary.read_text(encoding="utf-8"))["bi_snv_count"] == 1
     assert str(output_dir / "chr2") in capsys.readouterr().out
+    params = json.loads((output_dir / "chr2" / "params_5_9.json").read_text(encoding="utf-8"))
+    assert params["command"] == "vcf-stats"
+    assert params["mode"] == "vcf"
+    assert params["vcf"] == str(vcf.resolve())
+    assert params["package_version"]
+    assert not (output_dir / "chr2" / "params.json").exists()
 
 
 def test_cli_writes_the_chromosome_directory(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
@@ -206,6 +212,11 @@ def test_cli_writes_the_chromosome_directory(tmp_path: Path, capsys: pytest.Capt
         ]
     )
     chrom_dir = output_dir / "chrX"
+    params = json.loads((chrom_dir / "params.json").read_text(encoding="utf-8"))
+    assert params["mode"] == "prefix"
+    assert params["chr"] == "X"
+    assert params["prefix"] == "cohort"
+    assert params["input_dir"] == str(tmp_path.resolve())
     summary = json.loads((chrom_dir / "summary.json").read_text(encoding="utf-8"))
     indels = json.loads((chrom_dir / "indels-stats.json").read_text(encoding="utf-8"))
     diffs = json.loads((chrom_dir / "insertions-deletions-stats.json").read_text(encoding="utf-8"))
@@ -214,3 +225,16 @@ def test_cli_writes_the_chromosome_directory(tmp_path: Path, capsys: pytest.Capt
     assert indels == {}
     assert diffs == {}
     assert str(chrom_dir) in capsys.readouterr().out
+
+
+def test_cli_sum_writes_params(tmp_path: Path) -> None:
+    _write_vcf(tmp_path / "vcfs" / "cohort.chr1.vcf", _site("chr1", 10, "A", "C"))
+    stats_dir = tmp_path / "stats"
+    write_chromosome_stats(stats_dir, collect_vcf_stats(tmp_path / "vcfs", "1", "cohort"))
+    overall = stats_dir / "overall"
+    main(["vcf-stats", "--sum", "--input-dir", str(stats_dir), "--output-dir", str(overall)])
+    params = json.loads((overall / "params.json").read_text(encoding="utf-8"))
+    assert params["mode"] == "sum"
+    assert params["sum"] is True
+    assert params["input_dir"] == str(stats_dir.resolve())
+    assert params["output_dir"] == str(overall.resolve())

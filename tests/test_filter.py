@@ -84,7 +84,8 @@ def test_histograms_without_caps(tmp_path: Path):
     assert (output / "inherited_patients_per_variant_hist.tsv").read_text(
         encoding="utf-8"
     ) == ("count\tn\n1\t3\n2\t2\n3\t1\n")
-    assert json.loads((output / "params.json").read_text(encoding="utf-8")) == {
+    assert _stable_params(output / "params.json") == {
+        "command": "filter",
         "input_dir": str(source.resolve()),
         "output_dir": str(output.resolve()),
         "patient_cap": "disabled",
@@ -124,7 +125,8 @@ def test_both_caps_write_vcf_and_sites(tmp_path: Path):
     assert not (output / "chr22" / "denovo_00000.vcf").exists()
     assert not (sites / "chr22" / "denovo_00000.tsv").exists()
     assert not (sites / "notes").exists()
-    assert json.loads((output / "params.json").read_text(encoding="utf-8")) == {
+    assert _stable_params(output / "params.json") == {
+        "command": "filter",
         "input_dir": str(source.resolve()),
         "output_dir": str(output.resolve()),
         "patient_cap": 2,
@@ -286,3 +288,10 @@ def test_vcf_shard_name_drops_prefix_and_header(tmp_path: Path):
     assert (sites / "chr21" / "inherited_10000001_12500000.tsv").read_text(
         encoding="utf-8"
     ).startswith(TSV_HEADER)
+
+
+def _stable_params(path: Path) -> dict:
+    params = json.loads(path.read_text(encoding="utf-8"))
+    assert params.pop("package_version")
+    assert params.pop("run_at")
+    return params

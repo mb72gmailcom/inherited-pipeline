@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 
 import pytest
@@ -160,3 +161,71 @@ def test_subtract_missing_input_dir(tmp_path: Path, capsys):
         )
     assert exc.value.code == 1
     assert "input directory not found" in capsys.readouterr().err
+
+
+def test_subtract_no_sites_writes_vcfs_only(tmp_path: Path):
+    dir1 = tmp_path / "a"
+    dir2 = tmp_path / "b"
+    _write(
+        dir1 / "chr21" / "variants_1_1000.vcf",
+        "chr21\t10\t.\tA\tG\nchr21\t20\t.\tC\tT\n",
+    )
+    _write(dir2 / "chr21" / "variants_1_1000.vcf", "chr21\t20\t.\tC\tT\n")
+
+    output = tmp_path / "out"
+    main(
+        [
+            "subtract",
+            "--input-dir1",
+            str(dir1),
+            "--input-dir2",
+            str(dir2),
+            "--output-dir",
+            str(output),
+            "--no-sites",
+        ]
+    )
+
+    assert (output / "chr21" / "variants_1_1000.vcf").read_text(encoding="utf-8") == (
+        "chr21\t10\t.\tA\tG\n"
+    )
+    assert not (tmp_path / "out-sites").exists()
+    params = json.loads((output / "params.json").read_text(encoding="utf-8"))
+    assert params.pop("package_version")
+    assert params.pop("run_at")
+    assert params == {
+        "command": "subtract",
+        "input_dir1": str(dir1.resolve()),
+        "input_dir2": str(dir2.resolve()),
+        "output_dir": str(output.resolve()),
+        "sites": False,
+    }
+
+
+def test_subtract_writes_params_with_sites(tmp_path: Path):
+    dir1 = tmp_path / "a"
+    dir2 = tmp_path / "b"
+    _write(dir1 / "chr21" / "variants_1_1000.vcf", "chr21\t10\t.\tA\tG\n")
+    _write_sites(
+        tmp_path / "a-sites" / "chr21" / "inherited_1_1000.tsv",
+        "chr21\t10\t.\tA\tG\tp1\n",
+    )
+    dir2.mkdir()
+
+    output = tmp_path / "out"
+    subtract_variants(dir1, dir2, output)
+
+    params = json.loads((output / "params.json").read_text(encoding="utf-8"))
+    assert params["sites"] is True
+
+
+def test_subtract_fails_when_no_vcf_files(tmp_path: Path):
+    dir1 = tmp_path / "a"
+    dir2 = tmp_path / "b"
+    _write(dir1 / "chr21" / "variants_00000.vcf", "chr21\t10\t.\tA\tG\n")
+    dir2.mkdir()
+
+    output = tmp_path / "out"
+    with pytest.raises(ValueError, match="no variants_<start>_<end>.vcf files"):
+        subtract_variants(dir1, dir2, output, sites=False)
+    assert not output.exists()
