@@ -8,6 +8,7 @@ from inherited.alleles import validate_allele_mode
 from inherited.analyze import analyze_vcf, save_run_params
 from inherited.checkpoint import validate_file_suffix
 from inherited.filter import PREFIXES, filter_results
+from inherited.invert import invert_sites
 from inherited.params import resolved, write_params
 from inherited.subtract import subtract_variants
 from inherited.constants import (
@@ -326,6 +327,35 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
 
+    invert_cmd = subparsers.add_parser(
+        "invert",
+        help="Turn variant -> patients site TSVs into patient -> variants TSVs",
+    )
+    invert_cmd.add_argument(
+        "--input-dir",
+        required=True,
+        type=Path,
+        help="Directory with chrN/{prefix}_*.tsv short-format site files",
+    )
+    invert_cmd.add_argument(
+        "--output-dir",
+        required=True,
+        type=Path,
+        help="Directory for chrN/patients.tsv, patients.tsv, counts.tsv, params.json",
+    )
+    invert_cmd.add_argument(
+        "--prefix",
+        choices=PREFIXES,
+        default="inherited",
+        help="Site file prefix to read (default: inherited)",
+    )
+    invert_cmd.add_argument(
+        "--chrom",
+        action="append",
+        default=None,
+        help="Only this chromosome (chr21 or 21); repeat for several. Default: all chrN folders",
+    )
+
     stats_cmd = subparsers.add_parser(
         "vcf-stats",
         help="Count SNV, MNV, insertion, and deletion alleles in one chromosome of pVCFs",
@@ -390,6 +420,10 @@ def main(argv: list[str] | None = None) -> None:
 
     if args.command == "subtract":
         _run_subtract(args)
+        return
+
+    if args.command == "invert":
+        _run_invert(args)
         return
 
     if args.command == "analyze":
@@ -627,6 +661,21 @@ def _run_subtract(args: argparse.Namespace) -> None:
         print(f"Wrote subtracted VCFs to {args.output_dir} and TSVs to {sites_dir}")
     else:
         print(f"Wrote subtracted VCFs to {args.output_dir}")
+    print(f"Wrote parameters to {args.output_dir / 'params.json'}")
+
+
+def _run_invert(args: argparse.Namespace) -> None:
+    try:
+        totals = invert_sites(
+            args.input_dir, args.output_dir, prefix=args.prefix, chroms=args.chrom
+        )
+    except (ValueError, OSError) as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        raise SystemExit(1) from exc
+    print(
+        f"Wrote {totals['patients']} patients, {totals['variants']} variants, "
+        f"{totals['pairs']} patient-variant pairs to {args.output_dir}"
+    )
     print(f"Wrote parameters to {args.output_dir / 'params.json'}")
 
 

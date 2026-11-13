@@ -230,6 +230,34 @@ python run.py analyze ... -o results/chr2 --resume
 
 Requires an existing incomplete `checkpoint.json`. With `--vcf`, also requires `--segment-size > 0`. With `--vcf-dir`, resume skips shards that ended at or before the checkpointed position.
 
+## Patient -> variants
+
+`invert` turns short-format site TSVs (`#CHROM POS ID REF ALT PATIENTS`, patients separated by `;`) into one line per patient:
+
+```bash
+python run.py invert \
+  --input-dir wgs_2026/inherited_vcap100000_pcap93-sites \
+  --output-dir wgs_2026/patients_vcap100000_pcap93
+```
+
+It reads every `chrN/{prefix}_*.tsv` (`--prefix inherited|denovo|mendelian_bad`, default `inherited`), with either naming (`inherited_00000.tsv` or `inherited_<start>_<end>.tsv`). `--chrom chr21` (repeatable) limits the run to some chromosomes. Use a new output directory: `invert` refuses to start when a `chrN/` folder in `--output-dir` holds anything other than `patients.tsv` (for example the `variants_*.vcf` files of a VCF tree). Outputs:
+
+| file | content |
+|---|---|
+| `chrN/patients.tsv` | `#PATIENT  N_VARIANTS  VARIANTS` for one chromosome |
+| `counts.tsv` | `#PATIENT  TOTAL  chr1 ... chrN` variant counts |
+| `params.json` | inputs, options, and per-chromosome variant / pair / patient counts |
+
+`VARIANTS` are `chrom_pos_ref_alt` keys joined by `;`, ordered by position, REF and ALT. There is no genome-wide patient file; `counts.tsv` gives the per-chromosome counts. Patients are sorted by ID. A variant listed in several input rows is written once per patient. Each line holds one patient, so the files can be read line by line:
+
+```python
+with open("chr21/patients.tsv") as handle:
+    next(handle)
+    for line in handle:
+        patient, n, variants = line.rstrip("\n").split("\t")
+        keys = variants.split(";")
+```
+
 ## VCF allele statistics
 
 `vcf-stats` counts alleles in cohort pVCFs. It uses chromosome, position, REF, and ALT only. Sample columns are not read. `--output-dir` is the parent directory; the chromosome is added under it.
