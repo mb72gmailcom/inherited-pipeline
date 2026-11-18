@@ -294,6 +294,15 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Drop a variant when its patient count is > this value",
     )
+    filter_cmd.add_argument(
+        "--no-sites",
+        dest="sites",
+        action="store_false",
+        help=(
+            "Write the filtered VCF tree only, not the {output_dir}-sites TSVs. "
+            "Requires --variant-cap or --patient-cap"
+        ),
+    )
 
     subtract_cmd = subparsers.add_parser(
         "subtract",
@@ -315,7 +324,16 @@ def build_parser() -> argparse.ArgumentParser:
         "--output-dir",
         required=True,
         type=Path,
-        help="Directory for variants_${start}_${end}.vcf files",
+        help="Directory for the subtracted VCFs (named as in --input-dir1)",
+    )
+    subtract_cmd.add_argument(
+        "--concatenate",
+        action="store_true",
+        help=(
+            "Match per chromosome instead of per file name: all --input-dir2 files of a "
+            "chromosome (chrX/chrY: of a group) remove their variants from every --input-dir1 "
+            "file of it. Needed for trees split by variant count (variants_00000.vcf, ...)"
+        ),
     )
     subtract_cmd.add_argument(
         "--no-sites",
@@ -582,11 +600,14 @@ def _run_filter(args: argparse.Namespace) -> None:
             args.prefix,
             variant_cap=args.variant_cap,
             patient_cap=args.patient_cap,
+            sites=args.sites,
         )
     except ValueError as exc:
         print(f"error: {exc}", file=sys.stderr)
         raise SystemExit(1) from exc
-    if sites_dir is None:
+    if not args.sites:
+        print(f"Wrote histograms and filtered VCFs to {args.output_dir}")
+    elif sites_dir is None:
         print(f"Wrote histograms to {args.output_dir}")
     else:
         print(
@@ -651,7 +672,11 @@ def _run_vcf_stats(args: argparse.Namespace) -> None:
 def _run_subtract(args: argparse.Namespace) -> None:
     try:
         subtract_variants(
-            args.input_dir1, args.input_dir2, args.output_dir, sites=args.sites
+            args.input_dir1,
+            args.input_dir2,
+            args.output_dir,
+            sites=args.sites,
+            concatenate=args.concatenate,
         )
     except ValueError as exc:
         print(f"error: {exc}", file=sys.stderr)

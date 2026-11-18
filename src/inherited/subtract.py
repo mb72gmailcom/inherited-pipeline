@@ -1,31 +1,84 @@
-"""Write variants present in one VCF tree and absent from the paired file in another."""
+"""Write variants present in one VCF tree and absent from another.
+
+Two ways to match the trees:
+
+* by file name (default): ``chrN/variants_<start>_<end>.vcf`` in the first tree is compared with the
+  file of the same name in the second. Right for trees split by genomic position.
+* per chromosome (``concatenate=True``): every variant of a chromosome in the second tree removes
+  that variant from the first, whatever files the two trees split it into. Needed for older trees
+  split by variant count (``variants_00000.vcf``, ``variants_00001.vcf``, ...), whose segment
+  boundaries differ between runs. chrX/chrY files are matched within their group (``females``,
+  ``males_par1``, ``males_par2``, ``males_nonPar``), not across groups.
+
+Output files always keep the first tree's names.
+"""
 
 from __future__ import annotations
 
 import re
+from collections import defaultdict
+from dataclasses import dataclass
 from pathlib import Path
 
 from inherited.filter import PREFIXES
 from inherited.params import write_params
+from inherited.xchrom import X_BUCKETS, Y_BUCKETS
 
 _CHROM_DIR = re.compile(r"^chr(\d+|X|Y)$")
-_VCF_NAME = re.compile(r"^variants_\d+_\d+\.vcf$")
+_BUCKETS = sorted(set(X_BUCKETS) | set(Y_BUCKETS), key=len, reverse=True)
+_VCF_NAME = re.compile(
+    r"^variants(?:_(?P<bucket>" + "|".join(_BUCKETS) + r"))?"
+    r"(?:_(?P<first>\d+)(?:_(?P<second>\d+))?)?\.vcf$"
+)
 TSV_HEADER = "#CHROM\tPOS\tID\tREF\tALT\tPATIENTS\n"
+
+POSITION, SEGMENT, WHOLE = "position", "segment", "whole"
+
+
+@dataclass(frozen=True)
+class VcfFile:
+    """One ``variants*.vcf`` file: its group (chrX/chrY bucket or "") and naming style."""
+
+    path: Path
+    bucket: str
+    naming: str  # POSITION (_<start>_<end>), SEGMENT (_<index>) or WHOLE (no number)
+    order: int
+
+    @property
+    def name(self) -> str:
+        return self.path.name
+
+
+def parse_vcf_name(path: Path) -> VcfFile | None:
+    match = _VCF_NAME.fullmatch(path.name)
+    if match is None:
+        return None
+    bucket = match["bucket"] or ""
+    if match["second"] is not None:
+        return VcfFile(path, bucket, POSITION, int(match["first"]))
+    if match["first"] is not None:
+        return VcfFile(path, bucket, SEGMENT, int(match["first"]))
+    return VcfFile(path, bucket, WHOLE, 0)
 
 
 def subtract_variants(
-    input_dir1: Path, input_dir2: Path, output_dir: Path, *, sites: bool = True
-) -> None:
-    """Subtract paired ``variants_${start}_${end}.vcf`` files.
+    input_dir1: Path,
+    input_dir2: Path,
+    output_dir: Path,
+    *,
+    sites: bool = True,
+    concatenate: bool = False,
+) -> dict:
+    """Subtract the variants of ``input_dir2`` from ``input_dir1``.
 
-    A row from the first directory is written when its ``CHROM``, ``POS``,
-    ``REF``, and ``ALT`` are absent from the same filename in the second
-    directory. Files that exist only in the first directory are copied.
-    When ``sites`` is true, the same variants are written as short-format TSVs
-    under ``{output_dir}-sites``, with ``PATIENTS`` copied from
-    ``{input_dir1}-sites``, plus a ``patients.txt``. When ``sites`` is false,
-    only the VCF tree is written and no sites directory is read or created.
-    Parameters are recorded in ``{output_dir}/params.json``.
+    A row of the first tree is written when its ``CHROM``, ``POS``, ``REF`` and ``ALT`` are absent
+    from the second tree: from the file of the same name by default, or from the whole chromosome
+    (and chrX/chrY group) with ``concatenate``. Output files keep the first tree's names; a file
+    with nothing to compare against is copied. When ``sites`` is true, the same variants are
+    written as short-format TSVs under ``{output_dir}-sites``, with ``PATIENTS`` copied from
+    ``{input_dir1}-sites``, plus a ``patients.txt``. When ``sites`` is false, only the VCF tree is
+    written and no sites directory is read or created. Parameters are recorded in
+    ``{output_dir}/params.json``. Returns the per-group file counts written there.
     """
     if not input_dir1.is_dir():
         raise ValueError(f"input directory not found: {input_dir1}")
@@ -36,51 +89,125 @@ def subtract_variants(
         raise ValueError(f"sites directory not found: {sites_dir1}")
     sites_out = output_dir.with_name(output_dir.name + "-sites")
 
-    vcf_files = [
-        (chrom_dir.name, vcf_path)
-        for chrom_dir in _chrom_dirs(input_dir1)
-        for vcf_path in _variant_files(chrom_dir)
-    ]
-    if not vcf_files:
-        raise ValueError(
-            f"no variants_<start>_<end>.vcf files found under {input_dir1}/chr*"
-        )
-
+    plan = _plan(input_dir1, input_dir2, concatenate)
     patients: set[str] = set()
-    for chrom, vcf_path in vcf_files:
-        paired = input_dir2 / chrom / vcf_path.name
-        blocked = _variant_keys(paired) if paired.is_file() else set()
-        destination = output_dir / chrom / vcf_path.name
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        if not sites:
-            _write_vcf_difference(vcf_path, destination, blocked)
-            continue
-        sites_path = _sites_file(sites_dir1, chrom, vcf_path.name)
-        site_patients = _read_site_patients(sites_path)
-        tsv_destination = sites_out / chrom / sites_path.name
-        tsv_destination.parent.mkdir(parents=True, exist_ok=True)
-        patients.update(
-            _write_difference(
-                vcf_path,
-                destination,
-                tsv_destination,
-                blocked,
-                site_patients,
-                sites_path,
+    groups: dict[str, dict[str, int]] = {}
+    for chrom, bucket, files1, blocked_sources in plan:
+        label = f"{chrom}/{bucket}" if bucket else chrom
+        groups[label] = {"files1": len(files1), "files2": len(blocked_sources)}
+        if concatenate:
+            group_blocked = _keys_of(blocked_sources)
+        for vcf in files1:
+            if concatenate:
+                blocked = group_blocked
+            else:
+                blocked = _keys_of(blocked_sources[vcf.name] if vcf.name in blocked_sources else [])
+            destination = output_dir / chrom / vcf.name
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            if not sites:
+                _write_vcf_difference(vcf.path, destination, blocked)
+                continue
+            sites_path = _sites_file(sites_dir1, chrom, vcf.name)
+            site_patients = _read_site_patients(sites_path)
+            tsv_destination = sites_out / chrom / sites_path.name
+            tsv_destination.parent.mkdir(parents=True, exist_ok=True)
+            patients.update(
+                _write_difference(
+                    vcf.path, destination, tsv_destination, blocked, site_patients, sites_path
+                )
             )
-        )
     if sites:
         _write_patient_list(sites_out / "patients.txt", patients)
-    _write_params(input_dir1, input_dir2, output_dir, sites=sites)
+    _write_params(input_dir1, input_dir2, output_dir, sites=sites, concatenate=concatenate,
+                  groups=groups)
+    return groups
+
+
+def _plan(input_dir1: Path, input_dir2: Path, concatenate: bool):
+    """List (chrom, bucket, files of tree 1, what to block) for every group of tree 1.
+
+    By file name, "what to block" maps a tree-1 file name to the tree-2 file of that name;
+    with ``concatenate`` it is the list of all tree-2 files of the group.
+    """
+    plan = []
+    for chrom_dir in _chrom_dirs(input_dir1):
+        chrom = chrom_dir.name
+        files1 = _variant_files(chrom_dir)
+        dir2 = input_dir2 / chrom
+        files2 = _variant_files(dir2) if dir2.is_dir() else []
+        if not concatenate:
+            for tree, files in ((input_dir1, files1), (input_dir2, files2)):
+                segmented = [f.name for f in files if f.naming == SEGMENT]
+                if segmented:
+                    raise ValueError(
+                        f"{tree / chrom} has segment-numbered files ({segmented[0]}, ...), whose "
+                        "boundaries differ between runs and cannot be paired by name; "
+                        "use --concatenate"
+                    )
+            files1 = [f for f in files1 if f.naming == POSITION]
+            by_name = {f.name: [f] for f in files2 if f.naming == POSITION}
+            for bucket, group in _by_bucket(files1).items():
+                plan.append((chrom, bucket, group,
+                             {f.name: by_name[f.name] for f in group if f.name in by_name}))
+            continue
+        groups2 = _by_bucket(files2)
+        for tree, groups in ((input_dir1, _by_bucket(files1)), (input_dir2, groups2)):
+            for bucket, group in groups.items():
+                styles = sorted({f.naming for f in group})
+                if len(styles) > 1:
+                    where = f"{tree / chrom}" + (f" ({bucket})" if bucket else "")
+                    raise ValueError(
+                        f"{where} mixes file naming styles ({', '.join(styles)}): "
+                        + ", ".join(f.name for f in group[:4])
+                    )
+        for bucket, group in _by_bucket(files1).items():
+            plan.append((chrom, bucket, group, groups2.get(bucket, [])))
+    if not plan:
+        expected = "variants*.vcf" if concatenate else "variants_<start>_<end>.vcf"
+        raise ValueError(f"no {expected} files found under {input_dir1}/chr*")
+    return plan
+
+
+def _by_bucket(files: list[VcfFile]) -> dict[str, list[VcfFile]]:
+    groups: dict[str, list[VcfFile]] = defaultdict(list)
+    for vcf in files:
+        groups[vcf.bucket].append(vcf)
+    return dict(groups)
+
+
+def _keys_of(files: list[VcfFile]) -> set[str]:
+    """Compact keys (CHROM, POS, REF, ALT joined by tabs) of every row in ``files``."""
+    keys: set[str] = set()
+    for vcf in files:
+        for key, _line in _iter_vcf_rows(vcf.path):
+            keys.add(_compact(key))
+    return keys
+
+
+def _compact(key: tuple[str, str, str, str]) -> str:
+    return "\t".join(key)
 
 
 def _write_params(
-    input_dir1: Path, input_dir2: Path, output_dir: Path, *, sites: bool
+    input_dir1: Path,
+    input_dir2: Path,
+    output_dir: Path,
+    *,
+    sites: bool,
+    concatenate: bool,
+    groups: dict[str, dict[str, int]],
 ) -> Path:
     payload = {
         "command": "subtract",
+        "concatenate": concatenate,
+        "files": groups,
         "input_dir1": str(input_dir1.resolve()),
         "input_dir2": str(input_dir2.resolve()),
+        "matching": (
+            "per chromosome (chrX/chrY per group): all input_dir2 files of a chromosome together"
+            if concatenate
+            else "per file: input_dir1 file against the input_dir2 file of the same name"
+        ),
         "output_dir": str(output_dir.resolve()),
         "sites": sites,
     }
@@ -105,17 +232,13 @@ def _chrom_sort_key(name: str) -> tuple[int, int | str]:
     return (0, int(suffix))
 
 
-def _variant_files(chrom_dir: Path) -> list[Path]:
+def _variant_files(chrom_dir: Path) -> list[VcfFile]:
     files = [
-        path
+        parsed
         for path in chrom_dir.iterdir()
-        if path.is_file() and _VCF_NAME.fullmatch(path.name)
+        if path.is_file() and (parsed := parse_vcf_name(path)) is not None
     ]
-    return sorted(files, key=lambda path: path.name)
-
-
-def _variant_keys(path: Path) -> set[tuple[str, str, str, str]]:
-    return {key for key, _line in _iter_vcf_rows(path)}
+    return sorted(files, key=lambda f: (f.bucket, f.order, f.name))
 
 
 def _iter_vcf_rows(path: Path):
@@ -168,7 +291,7 @@ def _write_difference(
     source: Path,
     destination: Path,
     tsv_destination: Path,
-    blocked: set[tuple[str, str, str, str]],
+    blocked: set[str],
     site_patients: dict[tuple[str, str, str, str], str],
     sites_path: Path,
 ) -> set[str]:
@@ -178,7 +301,7 @@ def _write_difference(
     ) as tsv:
         tsv.write(TSV_HEADER)
         for key, line in _iter_vcf_rows(source):
-            if key in blocked:
+            if _compact(key) in blocked:
                 continue
             if key not in site_patients:
                 chrom, pos, ref, alt = key
@@ -193,11 +316,11 @@ def _write_difference(
 
 
 def _write_vcf_difference(
-    source: Path, destination: Path, blocked: set[tuple[str, str, str, str]]
+    source: Path, destination: Path, blocked: set[str]
 ) -> None:
     with destination.open("w", encoding="utf-8") as vcf:
         for key, line in _iter_vcf_rows(source):
-            if key not in blocked:
+            if _compact(key) not in blocked:
                 vcf.write(f"{line}\n")
 
 

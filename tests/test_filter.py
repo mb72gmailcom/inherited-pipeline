@@ -47,6 +47,7 @@ def test_filter_parser_defaults():
     assert args.prefix == "denovo"
     assert args.variant_cap is None
     assert args.patient_cap is None
+    assert args.sites is True
 
 
 def test_filter_parser_rejects_negative_cap():
@@ -84,13 +85,18 @@ def test_histograms_without_caps(tmp_path: Path):
     assert (output / "inherited_patients_per_variant_hist.tsv").read_text(
         encoding="utf-8"
     ) == ("count\tn\n1\t3\n2\t2\n3\t1\n")
+    per_person = json.loads((output / "inherited_variants_per_person.json").read_text())
+    assert per_person == {"p1": 3, "p2": 2, "p3": 2, "p4": 3}
+    assert list(per_person) == sorted(per_person)
     assert _stable_params(output / "params.json") == {
         "command": "filter",
         "input_dir": str(source.resolve()),
         "output_dir": str(output.resolve()),
         "patient_cap": "disabled",
         "prefix": "inherited",
+        "sites_dir": None,
         "variant_cap": "disabled",
+        "variants_per_person_json": {"counted": "input, no caps", "patients": 4},
     }
 
 
@@ -131,7 +137,16 @@ def test_both_caps_write_vcf_and_sites(tmp_path: Path):
         "output_dir": str(output.resolve()),
         "patient_cap": 2,
         "prefix": "inherited",
+        "sites_dir": str(sites.resolve()),
         "variant_cap": 2,
+        "variants_per_person_json": {
+            "counted": "after caps (rows kept in the filtered VCF tree)",
+            "patients": 2,
+        },
+    }
+    # counted on what is kept: p1 and p4 exceed the variant cap and are dropped
+    assert json.loads((output / "inherited_variants_per_person.json").read_text()) == {
+        "p2": 1, "p3": 1,
     }
     assert not (sites / "params.json").exists()
 
@@ -154,6 +169,62 @@ def test_patient_cap_alone_drops_common_variants(tmp_path: Path):
     assert params["patient_cap"] == 2
     assert params["variant_cap"] == "disabled"
 
+
+
+def test_no_sites_writes_vcf_tree_only(tmp_path: Path):
+    source = tmp_path / "results"
+    output = tmp_path / "kept"
+    _cohort(source)
+
+    sites = filter_results(source, output, "inherited", patient_cap=2, sites=False)
+
+    assert sites is None
+    assert not (tmp_path / "kept-sites").exists()
+    assert (output / "chr21" / "variants_00000.vcf").read_text(encoding="utf-8") == (
+        "chr21\t20\t.\tC\tT\n" "chr21\t30\t.\tG\tA\n"
+    )
+    assert (output / "chr22" / "variants_00000.vcf").read_text(encoding="utf-8") == (
+        "chr22\t40\t.\tT\tC\n" "chr22\t50\t.\tA\tC\n"
+    )
+    assert (output / "chrX" / "variants_males_nonPar_00000.vcf").is_file()
+    counts = json.loads((output / "inherited_variants_per_person.json").read_text(encoding="utf-8"))
+    assert counts == {"p1": 2, "p2": 1, "p3": 1, "p4": 3}
+    params = json.loads((output / "params.json").read_text(encoding="utf-8"))
+    assert params["sites_dir"] is None
+    assert params["patient_cap"] == 2
+
+
+def test_no_sites_drops_empty_files(tmp_path: Path):
+    source = tmp_path / "results"
+    output = tmp_path / "kept"
+    _cohort(source)
+
+    filter_results(source, output, "inherited", patient_cap=0, sites=False)
+
+    assert not any(output.glob("chr*"))
+
+
+def test_no_sites_requires_a_cap(tmp_path: Path):
+    source = tmp_path / "results"
+    _cohort(source)
+    with pytest.raises(ValueError, match="--no-sites requires"):
+        filter_results(source, tmp_path / "kept", "inherited", sites=False)
+    assert not (tmp_path / "kept").exists()
+
+
+def test_cli_no_sites(tmp_path: Path, capsys):
+    source = tmp_path / "results"
+    output = tmp_path / "kept"
+    _cohort(source)
+    main(["filter", "--input-dir", str(source), "--output-dir", str(output),
+          "--prefix", "inherited", "--patient-cap", "2", "--no-sites"])
+    assert (output / "chr21" / "variants_00000.vcf").is_file()
+    assert not (tmp_path / "kept-sites").exists()
+    assert "filtered VCFs" in capsys.readouterr().out
+
+    with pytest.raises(SystemExit):
+        main(["filter", "--input-dir", str(source), "--output-dir", str(tmp_path / "x"),
+              "--prefix", "inherited", "--no-sites"])
 
 def test_variant_cap_alone_drops_high_burden_people(tmp_path: Path):
     source = tmp_path / "results"
@@ -198,6 +269,10 @@ def test_trio_calls_keeps_genotypes(tmp_path: Path):
     assert (output / "inherited_patients_per_variant_hist.tsv").read_text(
         encoding="utf-8"
     ) == ("count\tn\n1\t1\n3\t1\n")
+    # counted after the cap: SP1 (2 variants) is above --variant-cap 1 and is dropped
+    assert json.loads((output / "inherited_variants_per_person.json").read_text()) == {
+        "SP2": 1, "SP3": 1,
+    }
     assert (output / "chr21" / "variants_00000.vcf").read_text(encoding="utf-8") == (
         "chr21\t20\t.\tT\tG\n"
     )

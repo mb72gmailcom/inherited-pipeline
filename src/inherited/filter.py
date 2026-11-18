@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import json
 import re
 from collections import Counter
+from contextlib import nullcontext
 from pathlib import Path
 
 from inherited.params import write_params
@@ -28,18 +30,29 @@ def filter_results(
     *,
     variant_cap: int | None = None,
     patient_cap: int | None = None,
+    sites: bool = True,
 ) -> Path | None:
     """Count variants and, when a cap is set, write filtered VCF and TSV trees.
 
+    Always written to ``output_dir``: the two histograms (counted before any cap),
+    ``{prefix}_variants_per_person.json`` (patient id -> number of variants) and ``params.json``.
+    Without caps the JSON counts the input; with a cap it counts what is kept, i.e. the rows of
+    the ``-sites`` tree, and patients left with no variants are not listed.
+    ``sites=False`` (``--no-sites``) writes the filtered VCF tree only, without the ``-sites``
+    TSV tree; it requires a cap.
+
     The last column may be ``PATIENTS`` or ``TRIO_CALLS``. A directory that
     mixes the two stops before any output is written. Returns the ``-sites``
-    directory when at least one cap is applied, otherwise ``None``.
+    directory when at least one cap is applied and ``sites`` is true, otherwise ``None``.
     """
     if prefix not in PREFIXES:
         raise ValueError(
             f"prefix must be one of {', '.join(PREFIXES)}, got {prefix!r}"
         )
     _validate_caps(variant_cap, patient_cap)
+    capped = variant_cap is not None or patient_cap is not None
+    if not sites and not capped:
+        raise ValueError("--no-sites requires --variant-cap or --patient-cap")
     if not input_dir.is_dir():
         raise ValueError(f"input directory not found: {input_dir}")
 
@@ -54,11 +67,13 @@ def filter_results(
         output_dir / f"{prefix}_patients_per_variant_hist.tsv",
         carrier_counts,
     )
+    kept_counts = person_counts
     sites_dir = None
-    if variant_cap is not None or patient_cap is not None:
-        sites_dir = output_dir.with_name(output_dir.name + "-sites")
-        sites_dir.mkdir(parents=True, exist_ok=True)
-        _write_filtered(
+    if capped:
+        if sites:
+            sites_dir = output_dir.with_name(output_dir.name + "-sites")
+            sites_dir.mkdir(parents=True, exist_ok=True)
+        kept_counts = _write_filtered(
             tsv_files,
             output_dir,
             sites_dir,
@@ -68,12 +83,15 @@ def filter_results(
             variant_cap,
             patient_cap,
         )
+    _write_person_counts(output_dir / f"{prefix}_variants_per_person.json", kept_counts)
     _write_params(
         input_dir,
         output_dir,
         prefix,
         variant_cap=variant_cap,
         patient_cap=patient_cap,
+        patients_counted=len(kept_counts),
+        sites_dir=sites_dir,
     )
     return sites_dir
 
@@ -225,14 +243,22 @@ def _write_params(
     *,
     variant_cap: int | None,
     patient_cap: int | None,
+    patients_counted: int,
+    sites_dir: Path | None,
 ) -> Path:
+    capped = variant_cap is not None or patient_cap is not None
     payload = {
         "command": "filter",
         "input_dir": str(input_dir.resolve()),
         "output_dir": str(output_dir.resolve()),
         "patient_cap": _cap_param(patient_cap),
         "prefix": prefix,
+        "sites_dir": str(sites_dir.resolve()) if sites_dir is not None else None,
         "variant_cap": _cap_param(variant_cap),
+        "variants_per_person_json": {
+            "counted": "after caps (rows kept in the filtered VCF tree)" if capped else "input, no caps",
+            "patients": patients_counted,
+        },
     }
     return write_params(output_dir / "params.json", payload)
 
@@ -250,6 +276,13 @@ def _write_histogram(path: Path, counts: Counter[int]) -> None:
             handle.write(f"{count}\t{counts[count]}\n")
 
 
+def _write_person_counts(path: Path, counts: Counter[str]) -> None:
+    """Patient id -> number of variants (input rows listing the patient), sorted by id."""
+    with path.open("w", encoding="utf-8") as handle:
+        json.dump({person: counts[person] for person in sorted(counts)}, handle, indent=1)
+        handle.write("\n")
+
+
 def _vcf_name(stem: str, prefix: str) -> str:
     return f"variants{stem.removeprefix(prefix)}.vcf"
 
@@ -257,22 +290,28 @@ def _vcf_name(stem: str, prefix: str) -> str:
 def _write_filtered(
     tsv_files: list[tuple[str, Path]],
     output_dir: Path,
-    sites_dir: Path,
+    sites_dir: Path | None,
     person_counts: Counter[str],
     prefix: str,
     column: str,
     variant_cap: int | None,
     patient_cap: int | None,
-) -> None:
+) -> Counter[str]:
+    """Write the capped VCF tree (and the TSV tree unless ``sites_dir`` is None).
+
+    Returns variants per patient in what was kept.
+    """
+    kept_counts: Counter[str] = Counter()
     header = TSV_HEADER if column == _PATIENTS else _TRIO_HEADER
     for chrom, path in tsv_files:
         vcf_path = output_dir / chrom / _vcf_name(path.stem, prefix)
-        tsv_path = sites_dir / chrom / path.name
+        tsv_path = sites_dir / chrom / path.name if sites_dir is not None else None
         vcf_path.parent.mkdir(parents=True, exist_ok=True)
-        tsv_path.parent.mkdir(parents=True, exist_ok=True)
+        if tsv_path is not None:
+            tsv_path.parent.mkdir(parents=True, exist_ok=True)
         wrote = False
-        with vcf_path.open("w", encoding="utf-8") as vcf, tsv_path.open(
-            "w", encoding="utf-8"
+        with vcf_path.open("w", encoding="utf-8") as vcf, (
+            tsv_path.open("w", encoding="utf-8") if tsv_path is not None else nullcontext()
         ) as tsv:
             _column, rows = _iter_calls(path)
             for columns, calls in rows:
@@ -288,18 +327,23 @@ def _write_filtered(
                     ]
                 if not kept:
                     continue
-                if not wrote:
-                    tsv.write(header)
-                    wrote = True
+                kept_counts.update(person for person, _piece in kept)
                 site = "\t".join(columns)
                 vcf.write(f"{site}\n")
-                tsv.write(f"{site}\t{';'.join(piece for _person, piece in kept)}\n")
+                if tsv is not None:
+                    if not wrote:
+                        tsv.write(header)
+                    tsv.write(f"{site}\t{';'.join(piece for _person, piece in kept)}\n")
+                wrote = True
         if not wrote:
             vcf_path.unlink()
-            tsv_path.unlink()
             _remove_empty_dir(vcf_path.parent)
-            _remove_empty_dir(tsv_path.parent)
-    _remove_empty_dir(sites_dir)
+            if tsv_path is not None:
+                tsv_path.unlink()
+                _remove_empty_dir(tsv_path.parent)
+    if sites_dir is not None:
+        _remove_empty_dir(sites_dir)
+    return kept_counts
 
 
 def _remove_empty_dir(path: Path) -> None:

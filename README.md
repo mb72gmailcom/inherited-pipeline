@@ -230,6 +230,60 @@ python run.py analyze ... -o results/chr2 --resume
 
 Requires an existing incomplete `checkpoint.json`. With `--vcf`, also requires `--segment-size > 0`. With `--vcf-dir`, resume skips shards that ended at or before the checkpointed position.
 
+## Filter outputs
+
+`python run.py filter --input-dir ... --output-dir ... --prefix inherited` always writes, in `--output-dir`:
+
+- `{prefix}_variants_per_person_hist.tsv` — how many patients carry each number of variants
+- `{prefix}_patients_per_variant_hist.tsv` — how many variants have each number of carriers
+- `{prefix}_variants_per_person.json` — patient id -> number of variants, sorted by id
+- `params.json`
+
+The two histograms are counted on the input, before `--variant-cap` / `--patient-cap`. The JSON is counted
+on the input when no cap is given, and on what is kept (the rows of the filtered VCF tree) when a cap is given;
+patients left with no variants are then not listed. `params.json` records which (`variants_per_person_json`).
+Without caps nothing else is written; with a cap the filtered VCF tree (`chrN/variants_*.vcf`) and the
+`-sites` TSV tree are added. `--no-sites` (requires a cap) writes the filtered VCF tree only, without the
+`-sites` TSVs, e.g. to make model inputs:
+
+```bash
+python run.py filter --input-dir .../inherited_with_indels --output-dir .../inherited_with_indels_pcap93 \
+  --prefix inherited --patient-cap 93 --no-sites
+```
+
+<<<<<<< Updated upstream
+=======
+## Subtract
+
+`subtract` keeps the variants of one filtered VCF tree that are absent from another
+(matching on CHROM, POS, REF and ALT):
+
+```bash
+python run.py subtract --input-dir1 TREE1 --input-dir2 TREE2 --output-dir OUT [--no-sites] [--concatenate]
+```
+
+Output files keep the names of `--input-dir1`; a file with nothing to compare against is copied.
+Without `--no-sites`, the kept variants are also written as short TSVs to `OUT-sites`, with patients
+taken from `TREE1-sites`, plus `patients.txt`.
+
+- By default each `chrN/variants_<start>_<end>.vcf` of TREE1 is compared with the file of the same
+  name in TREE2. This is right for trees split by genomic position (the shard runs).
+- `--concatenate` matches per chromosome: every variant of a chromosome in TREE2 removes that variant
+  from every TREE1 file of the chromosome, whatever the two trees' file boundaries. Use it for older
+  trees split by variant count (`variants_00000.vcf`, `variants_00001.vcf`, ...), whose segments
+  differ between runs, or to subtract trees with different naming. Without `--concatenate`,
+  segment-numbered files stop the run with an error instead of being paired by name. All TREE2
+  variants of one chromosome are held in memory (chr1 of an old tree is about 5 M variants, a few
+  hundred MB).
+- chrX/chrY files (`variants_females_*`, `variants_males_par1_*`, `variants_males_par2_*`,
+  `variants_males_nonPar_*`) are matched within their group in both modes.
+- With `--concatenate`, a chromosome (or chrX/chrY group) whose files mix naming styles stops the
+  run with an error.
+
+`params.json` records the mode (`concatenate`, `matching`) and the number of files compared per
+chromosome and group (`files`).
+
+>>>>>>> Stashed changes
 ## Patient -> variants
 
 `invert` turns short-format site TSVs (`#CHROM POS ID REF ALT PATIENTS`, patients separated by `;`) into one line per patient:
